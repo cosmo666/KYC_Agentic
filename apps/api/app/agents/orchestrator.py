@@ -227,4 +227,13 @@ def widget_for(next_required: str, state: KYCState | None = None) -> dict | None
                 "doc_type": "pan",
                 "fields": _fields_from_extracted(pan.get("extracted_json", {})),
             }
+        if next_required == "done":
+            return {
+                "type": "verdict",
+                "decision": state.get("decision", "pending"),
+                "decision_reason": state.get("decision_reason", ""),
+                "checks": state.get("cross_validation", {}).get("checks", []),
+                "flags": state.get("flags", []),
+                "recommendations": state.get("recommendations", []),
+            }
     return widget
