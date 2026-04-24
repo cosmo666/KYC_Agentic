@@ -7,12 +7,17 @@ from langchain_core.messages import BaseMessage
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from qdrant_client import AsyncQdrantClient
+
 from app.agents import orchestrator as orch
+from app.agents.compliance import answer_faq, persist_compliance_qna
+from app.config import get_settings
 from app.db import models as m
 from app.db.session import get_db
 from app.graph.builder import build_graph
 from app.graph.checkpointer import open_checkpointer
 from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse, Widget
+from app.services.rag import RAGService
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -74,12 +79,13 @@ async def chat(
             intent = await orch.classify_intent(ollama, req.text, nr_before)
 
         if intent == "faq":
-            # Compliance agent placeholder — replaced in Phase 12.
-            answer = (
-                "That's a great question. I'll fetch the exact answer from our "
-                "compliance guide soon — for now, let's continue your KYC."
-            )
-            # Persist the user message and the fallback answer without re-running the graph.
+            qdrant = AsyncQdrantClient(url=get_settings().qdrant_url)
+            try:
+                rag = RAGService(qdrant, ollama)
+                answer, sources = await answer_faq(rag, ollama, req.text, language)
+            finally:
+                await qdrant.close()
+            await persist_compliance_qna(db, session_id, req.text, answer, sources)
             await graph.aupdate_state(
                 thread,
                 {

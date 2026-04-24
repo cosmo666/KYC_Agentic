@@ -42,10 +42,10 @@ class RAGService:
 
     async def retrieve(self, query: str, k: int = 4) -> list[dict]:
         vec = await self.ollama.embed(query)
-        hits = await self.q.search(
-            collection_name=self.collection, query_vector=vec, limit=k
+        res = await self.q.query_points(
+            collection_name=self.collection, query=vec, limit=k, with_payload=True
         )
         return [
             {"text": h.payload["text"], "source": h.payload["source"], "score": h.score}
-            for h in hits
+            for h in res.points
         ]
