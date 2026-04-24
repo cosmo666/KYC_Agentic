@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
 from app.routers import chat as chat_router
+from app.routers import confirm as confirm_router
 from app.routers import upload as upload_router
 from app.services.ollama_client import OllamaClient
 
@@ -52,3 +53,4 @@ async def health():
 
 app.include_router(chat_router.router)
 app.include_router(upload_router.router)
+app.include_router(confirm_router.router)
