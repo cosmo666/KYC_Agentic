@@ -110,3 +110,121 @@ def update_language(state: KYCState, user_text: str) -> Language:
         return detected
     state["_lang_streak"] = streak
     return current
+
+
+# ─────────────────── reply generation + widget envelopes ───────────────────
+
+_REPLY_PROMPT = """You are a warm, concise KYC assistant for Indian users. Reply in the user's language.
+
+Language code: {lang}  (en=English, hi=Hindi in Devanagari, mixed=Hinglish in Latin script)
+
+The workflow engine has decided the user must now do: {instruction}
+
+Do NOT invent steps. Keep the reply to 1-2 short sentences. Never mention internal state names
+(e.g. "next_required", "wait_for_aadhaar_image"). Do not ask more than one question at a time.
+"""
+
+
+# next_required → (english instruction for LLM, static widget envelope)
+STEP_WIDGETS: dict[str, tuple[str, dict | None]] = {
+    "wait_for_name": (
+        "Ask the user for their full name.",
+        None,
+    ),
+    "wait_for_aadhaar_image": (
+        "Tell the user to upload a clear photo of their Aadhaar card (front). "
+        "They can upload a file or use their camera.",
+        {
+            "type": "upload",
+            "doc_type": "aadhaar",
+            "accept": ["image/jpeg", "image/png", "application/pdf"],
+        },
+    ),
+    "wait_for_aadhaar_confirm": (
+        "Tell the user to review the fields we extracted from their Aadhaar and "
+        "confirm or edit them.",
+        None,  # widget filled at runtime with actual fields
+    ),
+    "wait_for_pan_image": (
+        "Tell the user to upload a clear photo of their PAN card.",
+        {
+            "type": "upload",
+            "doc_type": "pan",
+            "accept": ["image/jpeg", "image/png", "application/pdf"],
+        },
+    ),
+    "wait_for_pan_confirm": (
+        "Tell the user to review the fields extracted from their PAN and confirm or edit them.",
+        None,
+    ),
+    "wait_for_selfie": (
+        "Tell the user to take a selfie for face verification.",
+        {"type": "selfie_camera"},
+    ),
+    "done": ("Share the KYC verdict in plain language.", None),
+}
+
+
+async def generate_assistant_reply(
+    ollama: OllamaClient,
+    language: str,
+    next_required: str,
+    extra_context: str = "",
+) -> str:
+    instruction = STEP_WIDGETS.get(next_required, ("Continue the conversation.", None))[0]
+    if extra_context:
+        instruction = f"{instruction}\n\nExtra context: {extra_context}"
+    return await ollama.chat(
+        [
+            {
+                "role": "system",
+                "content": _REPLY_PROMPT.format(lang=language, instruction=instruction),
+            },
+            {"role": "user", "content": "Generate the reply now."},
+        ],
+        temperature=0.5,
+    )
+
+
+_AADHAAR_FIELDS = [
+    ("name", "Full name"),
+    ("dob", "Date of birth"),
+    ("gender", "Gender"),
+    ("aadhaar_number", "Aadhaar number (masked)"),
+    ("address", "Address"),
+]
+_PAN_FIELDS = [
+    ("name", "Full name"),
+    ("dob", "Date of birth"),
+    ("pan_number", "PAN number"),
+    ("father_name", "Father's name"),
+]
+
+
+def _fields_from_extracted(extracted: dict) -> list[dict]:
+    doc_type = extracted.get("doc_type", "")
+    fields = _AADHAAR_FIELDS if doc_type == "aadhaar" else _PAN_FIELDS
+    return [
+        {"name": k, "label": label, "value": extracted.get(k, "")} for k, label in fields
+    ]
+
+
+def widget_for(next_required: str, state: KYCState | None = None) -> dict | None:
+    """Return the widget envelope for a given step, or None if not interactive."""
+    widget = STEP_WIDGETS.get(next_required, (None, None))[1]
+    if widget is None and state:
+        if next_required == "wait_for_aadhaar_confirm":
+            aadhaar = state.get("aadhaar", {})
+            return {
+                "type": "editable_card",
+                "doc_type": "aadhaar",
+                "fields": _fields_from_extracted(aadhaar.get("extracted_json", {})),
+            }
+        if next_required == "wait_for_pan_confirm":
+            pan = state.get("pan", {})
+            return {
+                "type": "editable_card",
+                "doc_type": "pan",
+                "fields": _fields_from_extracted(pan.get("extracted_json", {})),
+            }
+    return widget
