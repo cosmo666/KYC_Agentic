@@ -57,11 +57,13 @@ async def capture(
         dest = upload_dir / f"{target}{suffix}"
         dest.write_bytes(await file.read())
 
+        client_ip = request.client.host if request.client else ""
         if target == "selfie":
             delta = {
                 "session_id": session_id,
                 "selfie": {"file_path": str(dest)},
                 "next_required": "biometric",
+                "_client_ip": client_ip,
             }
         else:
             delta = {
@@ -71,6 +73,7 @@ async def capture(
                     "file_path": str(dest),
                 },
                 "next_required": f"ocr_{target}",
+                "_client_ip": client_ip,
             }
 
         new_state = await graph.ainvoke(delta, config=thread)

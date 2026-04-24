@@ -62,6 +62,7 @@ async def chat(
         ainvoke_input: dict = {
             "messages": [user_msg_dict],
             "language": language,
+            "_client_ip": request.client.host if request.client else "",
         }
         if not has_prior_state:
             ainvoke_input["session_id"] = session_id

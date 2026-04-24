@@ -78,6 +78,7 @@ async def confirm(
             "session_id": req.session_id,
             req.doc_type: slot,
             "next_required": next_step,
+            "_client_ip": request.client.host if request.client else "",
         }
         new_state = await graph.ainvoke(delta, config=thread)
 

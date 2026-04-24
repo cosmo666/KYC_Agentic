@@ -66,6 +66,7 @@ async def upload(
             "session_id": session_id,
             doc_type: {**current.get(doc_type, {}), "file_path": str(dest)},
             "next_required": f"ocr_{doc_type}",
+            "_client_ip": request.client.host if request.client else "",
         }
         new_state = await graph.ainvoke(delta, config=thread)
 
