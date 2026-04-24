@@ -1,0 +1,172 @@
+from __future__ import annotations
+
+import uuid
+
+from fastapi import APIRouter, Depends, Request
+from langchain_core.messages import BaseMessage
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.agents import orchestrator as orch
+from app.db import models as m
+from app.db.session import get_db
+from app.graph.builder import build_graph
+from app.graph.checkpointer import open_checkpointer
+from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse, Widget
+
+router = APIRouter(prefix="/chat", tags=["chat"])
+
+
+def _msg_to_dict(msg) -> dict:
+    """Normalise dict / BaseMessage into the persistence shape."""
+    if isinstance(msg, BaseMessage):
+        role = {"human": "user", "ai": "assistant", "system": "system"}.get(
+            msg.type, msg.type
+        )
+        return {"role": role, "content": msg.content}
+    return {"role": msg["role"], "content": msg["content"], "widget": msg.get("widget")}
+
+
+@router.post("", response_model=ChatResponse)
+async def chat(
+    req: ChatRequest, request: Request, db: AsyncSession = Depends(get_db)
+) -> ChatResponse:
+    ollama = request.app.state.ollama
+    session_id = req.session_id or str(uuid.uuid4())
+    session_uuid = uuid.UUID(session_id)
+
+    # Ensure a sessions row exists for this thread.
+    sess = await db.get(m.Session, session_uuid)
+    if sess is None:
+        sess = m.Session(id=session_uuid, language="en", status="active")
+        db.add(sess)
+        await db.flush()
+
+    user_msg_dict = {"role": "user", "content": req.text}
+
+    async with open_checkpointer() as saver:
+        graph = build_graph().compile(checkpointer=saver)
+        thread = {"configurable": {"thread_id": session_id}}
+
+        snap = await graph.aget_state(thread)
+        has_prior_state = bool(snap and snap.values)
+
+        # Language tracking uses a shallow copy of prior state so we don't
+        # push partial dict updates through add_messages.
+        prior = dict(snap.values) if has_prior_state else {}
+        language = orch.update_language(prior, req.text)
+        sess.language = language
+
+        # Build the ainvoke input — on first turn we need seed fields;
+        # on continuation we pass only the deltas.
+        ainvoke_input: dict = {
+            "messages": [user_msg_dict],
+            "language": language,
+        }
+        if not has_prior_state:
+            ainvoke_input["session_id"] = session_id
+
+        # Optional intent classification (only mid-flow).
+        nr_before = prior.get("next_required")
+        intent = "continue_flow"
+        if nr_before and nr_before != "greet":
+            intent = await orch.classify_intent(ollama, req.text, nr_before)
+
+        if intent == "faq":
+            # Compliance agent placeholder — replaced in Phase 12.
+            answer = (
+                "That's a great question. I'll fetch the exact answer from our "
+                "compliance guide soon — for now, let's continue your KYC."
+            )
+            # Persist the user message and the fallback answer without re-running the graph.
+            await graph.aupdate_state(
+                thread,
+                {
+                    "messages": [
+                        user_msg_dict,
+                        {"role": "assistant", "content": answer},
+                    ],
+                    "language": language,
+                },
+            )
+            new_state_values = (await graph.aget_state(thread)).values
+            assistant_msg = {"role": "assistant", "content": answer}
+            widget = None
+        elif intent == "clarify":
+            clarification = await ollama.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a KYC assistant. The user asked for "
+                            f"clarification about the current step ({nr_before}). "
+                            f"Reply in language={language}. One or two sentences."
+                        ),
+                    },
+                    {"role": "user", "content": req.text},
+                ],
+                temperature=0.3,
+            )
+            await graph.aupdate_state(
+                thread,
+                {
+                    "messages": [
+                        user_msg_dict,
+                        {"role": "assistant", "content": clarification},
+                    ],
+                    "language": language,
+                },
+            )
+            new_state_values = (await graph.aget_state(thread)).values
+            assistant_msg = {"role": "assistant", "content": clarification}
+            widget = None
+        else:
+            # Run the graph one step — its entry conditional routes on next_required.
+            new_state_values = await graph.ainvoke(ainvoke_input, config=thread)
+
+            new_nr = new_state_values.get("next_required", "done")
+            reply_text = await orch.generate_assistant_reply(ollama, language, new_nr)
+            widget = orch.widget_for(new_nr, new_state_values)
+            assistant_msg = {"role": "assistant", "content": reply_text}
+            if widget:
+                assistant_msg["widget"] = widget
+
+            await graph.aupdate_state(thread, {"messages": [assistant_msg]})
+
+        # Persist messages to the domain table, skipping rows we've already written.
+        existing_count = (
+            await db.scalar(
+                select(func.count())
+                .select_from(m.Message)
+                .where(m.Message.session_id == session_uuid)
+            )
+        ) or 0
+        all_msgs = (await graph.aget_state(thread)).values.get("messages", [])
+        normalized = [_msg_to_dict(x) for x in all_msgs]
+        for seq, msg in enumerate(normalized[existing_count:], start=existing_count):
+            db.add(
+                m.Message(
+                    session_id=session_uuid,
+                    seq=seq,
+                    role=msg["role"],
+                    content=msg["content"],
+                    widget=msg.get("widget"),
+                )
+            )
+        await db.commit()
+
+    # Response carries only the latest user + assistant turn.
+    response_msgs: list[ChatMessage] = [ChatMessage(role="user", content=req.text)]
+    response_msgs.append(
+        ChatMessage(
+            role="assistant",
+            content=assistant_msg["content"],
+            widget=Widget(**widget) if widget else None,
+        )
+    )
+    return ChatResponse(
+        session_id=session_id,
+        messages=response_msgs,
+        next_required=new_state_values.get("next_required", "done"),
+        language=language,
+    )
