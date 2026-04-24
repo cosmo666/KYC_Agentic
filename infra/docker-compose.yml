@@ -100,7 +100,8 @@ services:
       - "8000:8000"
     volumes:
       - uploads:/data/uploads
-      - ../apps/api/app:/app/app  # dev hot-reload
+      - ../apps/api/app:/app/app      # dev hot-reload
+      - ../apps/api/tests:/app/tests  # run pytest inside container
     extra_hosts:
       - "host.docker.internal:host-gateway"  # needed on Linux for Ollama
 

@@ -17,12 +17,14 @@ RUN pip install --no-cache-dir uv==0.5.4
 
 WORKDIR /app
 
-# Copy manifest first for layer caching
+# Copy manifest first for layer caching. Install dev deps too so we can run
+# tests/migrations inside the container during development.
 COPY pyproject.toml ./
-RUN uv sync --no-dev
+RUN uv sync
 
 COPY app ./app
 COPY scripts ./scripts
+COPY tests ./tests
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
