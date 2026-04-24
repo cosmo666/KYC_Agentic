@@ -147,3 +147,57 @@ def cross_validate(
     ]
     total = sum(c["score"] * WEIGHTS[c["name"]] for c in checks)
     return {"overall_score": round(total * 100, 1), "checks": checks}
+
+
+# ───────────────────────── graph node entry point ─────────────────────────
+
+import uuid  # noqa: E402
+
+from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
+
+from app.db import models as _dbm  # noqa: E402
+from app.graph.state import KYCState  # noqa: E402
+
+
+async def run_validation(state: KYCState, db: AsyncSession) -> dict:
+    """Run cross-doc validation, persist, return the state delta."""
+    aadhaar_slot = state.get("aadhaar", {})
+    pan_slot = state.get("pan", {})
+    aadhaar = (
+        aadhaar_slot.get("confirmed_json")
+        or aadhaar_slot.get("extracted_json")
+        or {}
+    )
+    pan = pan_slot.get("confirmed_json") or pan_slot.get("extracted_json") or {}
+    aa_conf = aadhaar_slot.get("ocr_confidence", "low")
+    pan_conf = pan_slot.get("ocr_confidence", "low")
+
+    result = cross_validate(aadhaar, pan, aa_conf, pan_conf)
+
+    session_uuid = uuid.UUID(state["session_id"])
+    stmt = pg_insert(_dbm.ValidationResult).values(
+        session_id=session_uuid,
+        overall_score=result["overall_score"],
+        checks=result["checks"],
+    ).on_conflict_do_update(
+        index_elements=["session_id"],
+        set_={
+            "overall_score": result["overall_score"],
+            "checks": result["checks"],
+        },
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    # Carry over any critical fails as flags (surfaces at decision time).
+    flags = list(state.get("flags") or [])
+    for c in result["checks"]:
+        if c["status"] == "fail" and c["name"] in ("name_match", "dob_match"):
+            flags.append(f"{c['name']}_critical_fail")
+
+    return {
+        "cross_validation": result,
+        "flags": flags,
+        "next_required": "wait_for_selfie",
+    }

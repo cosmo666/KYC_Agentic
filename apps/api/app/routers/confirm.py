@@ -48,6 +48,7 @@ async def confirm(
 
         # Re-mask Aadhaar if the user tried to un-mask during edit.
         confirmed = dict(req.fields)
+        confirmed["doc_type"] = req.doc_type  # implicit in the route, not the form
         if req.doc_type == "aadhaar" and confirmed.get("aadhaar_number"):
             confirmed["aadhaar_number"] = mask_aadhaar(confirmed["aadhaar_number"])
 

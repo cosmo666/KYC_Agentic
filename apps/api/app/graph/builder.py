@@ -9,6 +9,7 @@ import httpx
 
 from app.agents import orchestrator as orch
 from app.agents.intake import run_intake
+from app.agents.validation import run_validation
 from app.config import get_settings
 from app.db.session import SessionLocal
 from app.graph.state import KYCState
@@ -99,8 +100,9 @@ async def n_intake_pan(state: KYCState) -> dict:
     return await _intake(state, "pan")
 
 
-async def n_stub_validate(state: KYCState) -> dict:
-    return {"next_required": "wait_for_selfie"}
+async def n_validate(state: KYCState) -> dict:
+    async with SessionLocal() as db:
+        return await run_validation(state, db)
 
 
 async def n_stub_biometric(state: KYCState) -> dict:
@@ -159,7 +161,7 @@ def build_graph():
     g.add_node("capture_name", n_capture_name)
     g.add_node("intake_aadhaar", n_intake_aadhaar)
     g.add_node("intake_pan", n_intake_pan)
-    g.add_node("validate", n_stub_validate)
+    g.add_node("validate", n_validate)
     g.add_node("biometric", n_stub_biometric)
     g.add_node("geolocation", n_stub_geolocation)
     g.add_node("decide", n_stub_decide)
