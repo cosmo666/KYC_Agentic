@@ -102,6 +102,7 @@ services:
       - uploads:/data/uploads
       - ../apps/api/app:/app/app      # dev hot-reload
       - ../apps/api/tests:/app/tests  # run pytest inside container
+      - ./rag-corpus:/corpus:ro       # RAG seed corpus (read-only)
     extra_hosts:
       - "host.docker.internal:host-gateway"  # needed on Linux for Ollama
 
