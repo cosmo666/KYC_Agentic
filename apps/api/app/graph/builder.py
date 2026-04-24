@@ -8,6 +8,7 @@ from langgraph.graph import END, StateGraph
 import httpx
 
 from app.agents import orchestrator as orch
+from app.agents.biometric import run_biometric
 from app.agents.intake import run_intake
 from app.agents.validation import run_validation
 from app.config import get_settings
@@ -105,8 +106,9 @@ async def n_validate(state: KYCState) -> dict:
         return await run_validation(state, db)
 
 
-async def n_stub_biometric(state: KYCState) -> dict:
-    return {"next_required": "geolocation"}
+async def n_biometric(state: KYCState) -> dict:
+    async with SessionLocal() as db:
+        return await run_biometric(state, db)
 
 
 async def n_stub_geolocation(state: KYCState) -> dict:
@@ -162,7 +164,7 @@ def build_graph():
     g.add_node("intake_aadhaar", n_intake_aadhaar)
     g.add_node("intake_pan", n_intake_pan)
     g.add_node("validate", n_validate)
-    g.add_node("biometric", n_stub_biometric)
+    g.add_node("biometric", n_biometric)
     g.add_node("geolocation", n_stub_geolocation)
     g.add_node("decide", n_stub_decide)
 

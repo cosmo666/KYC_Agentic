@@ -5,6 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import get_settings
+from app.routers import capture as capture_router
 from app.routers import chat as chat_router
 from app.routers import confirm as confirm_router
 from app.routers import upload as upload_router
@@ -54,3 +55,4 @@ async def health():
 app.include_router(chat_router.router)
 app.include_router(upload_router.router)
 app.include_router(confirm_router.router)
+app.include_router(capture_router.router)
