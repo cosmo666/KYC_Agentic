@@ -5,8 +5,14 @@ import re
 from langchain_core.messages import BaseMessage
 from langgraph.graph import END, StateGraph
 
+import httpx
+
 from app.agents import orchestrator as orch
+from app.agents.intake import run_intake
+from app.config import get_settings
+from app.db.session import SessionLocal
 from app.graph.state import KYCState
+from app.services.ollama_client import OllamaClient
 
 # Nodes return delta dicts — never the whole state — so the `add_messages`
 # reducer on KYCState.messages doesn't double-count anything we didn't touch.
@@ -69,13 +75,28 @@ async def n_capture_name(state: KYCState) -> dict:
     return {"user_name": name, "next_required": "wait_for_aadhaar_image"}
 
 
-# Stubs — replaced in later phases.
-async def n_stub_intake_aadhaar(state: KYCState) -> dict:
-    return {"next_required": "wait_for_aadhaar_confirm"}
+async def _intake(state: KYCState, doc_type: str) -> dict:
+    # LangGraph nodes don't receive the FastAPI request, so clients are
+    # constructed per-invocation. Acceptable for the POC — if this becomes a
+    # hot path we can thread them through RunnableConfig instead.
+    s = get_settings()
+    async with httpx.AsyncClient(base_url=s.ollama_base_url, timeout=180) as http:
+        ollama = OllamaClient(
+            http=http,
+            chat_model=s.chat_model,
+            ocr_model=s.ocr_model,
+            embed_model=s.embed_model,
+        )
+        async with SessionLocal() as db:
+            return await run_intake(state, db, ollama, doc_type)
 
 
-async def n_stub_intake_pan(state: KYCState) -> dict:
-    return {"next_required": "wait_for_pan_confirm"}
+async def n_intake_aadhaar(state: KYCState) -> dict:
+    return await _intake(state, "aadhaar")
+
+
+async def n_intake_pan(state: KYCState) -> dict:
+    return await _intake(state, "pan")
 
 
 async def n_stub_validate(state: KYCState) -> dict:
@@ -136,8 +157,8 @@ def build_graph():
     g = StateGraph(KYCState)
     g.add_node("greet", n_greet)
     g.add_node("capture_name", n_capture_name)
-    g.add_node("intake_aadhaar", n_stub_intake_aadhaar)
-    g.add_node("intake_pan", n_stub_intake_pan)
+    g.add_node("intake_aadhaar", n_intake_aadhaar)
+    g.add_node("intake_pan", n_intake_pan)
     g.add_node("validate", n_stub_validate)
     g.add_node("biometric", n_stub_biometric)
     g.add_node("geolocation", n_stub_geolocation)

@@ -98,3 +98,66 @@ async def extract_fields(
     if doc_type == "aadhaar" and fields.get("aadhaar_number"):
         fields["aadhaar_number"] = mask_aadhaar(fields["aadhaar_number"])
     return fields, pick_ocr_confidence(fields)
+
+
+# ───────────────────────── graph node entry point ─────────────────────────
+
+import uuid  # noqa: E402
+
+from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: E402
+
+from app.db import models as _dbm  # noqa: E402
+from app.graph.state import KYCState  # noqa: E402
+
+
+async def run_intake(
+    state: KYCState,
+    db: AsyncSession,
+    ollama: OllamaClient,
+    doc_type: str,
+) -> dict:
+    """Run OCR, persist to `documents`, return the state delta.
+
+    Precondition: state[doc_type]["file_path"] must be set by /upload.
+    """
+    slot = dict(state.get(doc_type, {}))
+    file_path = slot.get("file_path")
+    if not file_path:
+        return {}
+
+    fields, confidence = await extract_fields(ollama, file_path, doc_type)
+    slot["extracted_json"] = fields
+    slot["ocr_confidence"] = confidence
+
+    session_id = uuid.UUID(state["session_id"])
+    stmt = pg_insert(_dbm.Document).values(
+        session_id=session_id,
+        doc_type=doc_type,
+        file_path=file_path,
+        extracted_json=fields,
+        ocr_confidence=confidence,
+        engine="ollama_vision",
+    ).on_conflict_do_update(
+        index_elements=["session_id", "doc_type"],
+        set_={
+            "file_path": file_path,
+            "extracted_json": fields,
+            "ocr_confidence": confidence,
+            "engine": "ollama_vision",
+        },
+    )
+    await db.execute(stmt)
+    await db.commit()
+
+    delta: dict = {doc_type: slot}
+    if confidence == "low":
+        # Send the user back to re-upload.
+        delta["next_required"] = f"wait_for_{doc_type}_image"
+        delta["flags"] = [
+            *(state.get("flags") or []),
+            f"{doc_type}_ocr_low_confidence",
+        ]
+    else:
+        delta["next_required"] = f"wait_for_{doc_type}_confirm"
+    return delta
