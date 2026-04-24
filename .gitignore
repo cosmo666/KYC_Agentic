@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.uv-cache/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Env
+.env
+.env.local
+infra/.env
+
+# Uploads / local data
+uploads/
+apps/api/uploads/
+postgres_data/
+qdrant_data/
+langfuse_data/
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# LangChain / LangGraph local caches
+.langgraph_api/
