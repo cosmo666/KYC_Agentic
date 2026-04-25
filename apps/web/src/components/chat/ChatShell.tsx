@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   captureImage,
   confirmDoc,
@@ -6,6 +6,7 @@ import {
   uploadDoc,
 } from "@/api/client";
 import type { ChatMessage } from "@/api/schemas";
+import { CameraCaptureModal } from "@/components/camera/CameraCaptureModal";
 import { useSession } from "@/hooks/useSession";
 import { ChatInput } from "./ChatInput";
 import { MessageList, type WidgetHandlers } from "./MessageList";
@@ -14,6 +15,19 @@ export function ChatShell() {
   const { sessionId, update, reset } = useSession();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [busy, setBusy] = useState(false);
+  const [cameraTarget, setCameraTarget] = useState<"aadhaar" | "pan" | null>(
+    null,
+  );
+
+  useEffect(() => {
+    const onOpen = (e: Event) => {
+      const t = (e as CustomEvent).detail;
+      if (t === "aadhaar" || t === "pan") setCameraTarget(t);
+      // selfie capture happens inline in the SelfieCamera widget — no modal.
+    };
+    window.addEventListener("kyc:open-camera", onOpen);
+    return () => window.removeEventListener("kyc:open-camera", onOpen);
+  }, []);
 
   const appendAssistantFrom = (assistantMsgs: ChatMessage[]) => {
     setMessages((m) => [
@@ -124,6 +138,35 @@ export function ChatShell() {
       </header>
       <MessageList messages={messages} handlers={handlers} />
       <ChatInput onSend={sendText} disabled={busy} />
+      {cameraTarget && (
+        <CameraCaptureModal
+          open
+          target={cameraTarget}
+          onClose={() => setCameraTarget(null)}
+          onCropped={async (blob) => {
+            if (!sessionId) return;
+            setBusy(true);
+            setMessages((m) => [
+              ...m,
+              { role: "user", content: `Captured ${cameraTarget} image.` },
+            ]);
+            try {
+              const res = await captureImage(sessionId, cameraTarget, blob);
+              appendAssistantFrom(res.messages);
+            } catch (err) {
+              setMessages((m) => [
+                ...m,
+                {
+                  role: "assistant",
+                  content: `Error: ${(err as Error).message}`,
+                },
+              ]);
+            } finally {
+              setBusy(false);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }
