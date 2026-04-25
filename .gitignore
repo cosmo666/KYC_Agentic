@@ -10,6 +10,9 @@ node_modules/
 dist/
 .vite/
 *.tsbuildinfo
+# tsc -b emits these from tsconfig.node.json
+apps/web/vite.config.js
+apps/web/vite.config.d.ts
 
 # Env
 .env
