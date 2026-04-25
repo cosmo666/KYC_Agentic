@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { ChatMessage, Widget } from "@/api/schemas";
 import { MessageBubble } from "./MessageBubble";
 import { DocumentUploadWidget } from "@/components/widgets/DocumentUploadWidget";
+import { EditableFieldCard } from "@/components/widgets/EditableFieldCard";
 
 export type WidgetHandlers = {
   onUploadFile: (docType: "aadhaar" | "pan", file: File) => void;
@@ -54,6 +55,16 @@ function WidgetRenderer({
       />
     );
   }
-  // editable_card / selfie_camera / verdict added in subsequent tasks.
+  if (widget.type === "editable_card" && widget.doc_type && widget.fields) {
+    const dt = widget.doc_type as "aadhaar" | "pan";
+    return (
+      <EditableFieldCard
+        docType={dt}
+        fields={widget.fields}
+        onConfirm={(vals) => handlers.onConfirm(dt, vals)}
+      />
+    );
+  }
+  // selfie_camera / verdict added in subsequent tasks.
   return null;
 }
