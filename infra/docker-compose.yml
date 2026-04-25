@@ -106,6 +106,18 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"  # needed on Linux for Ollama
 
+  web:
+    build:
+      context: ../apps/web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "5173:80"
+
 volumes:
   postgres_data:
   qdrant_data:
