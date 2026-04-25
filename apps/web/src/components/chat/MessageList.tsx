@@ -4,6 +4,7 @@ import { MessageBubble } from "./MessageBubble";
 import { DocumentUploadWidget } from "@/components/widgets/DocumentUploadWidget";
 import { EditableFieldCard } from "@/components/widgets/EditableFieldCard";
 import { SelfieCamera } from "@/components/widgets/SelfieCamera";
+import { VerdictCard } from "@/components/widgets/VerdictCard";
 
 export type WidgetHandlers = {
   onUploadFile: (docType: "aadhaar" | "pan", file: File) => void;
@@ -69,6 +70,18 @@ function WidgetRenderer({
   if (widget.type === "selfie_camera") {
     return <SelfieCamera onCapture={(blob) => handlers.onSelfie(blob)} />;
   }
-  // verdict added next.
+  if (widget.type === "verdict") {
+    return (
+      <VerdictCard
+        verdict={{
+          decision: widget.decision ?? "flagged",
+          decision_reason: widget.decision_reason ?? "",
+          checks: (widget.checks ?? []) as never,
+          flags: widget.flags ?? [],
+          recommendations: widget.recommendations ?? [],
+        }}
+      />
+    );
+  }
   return null;
 }
