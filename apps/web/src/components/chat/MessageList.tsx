@@ -3,6 +3,7 @@ import type { ChatMessage, Widget } from "@/api/schemas";
 import { MessageBubble } from "./MessageBubble";
 import { DocumentUploadWidget } from "@/components/widgets/DocumentUploadWidget";
 import { EditableFieldCard } from "@/components/widgets/EditableFieldCard";
+import { SelfieCamera } from "@/components/widgets/SelfieCamera";
 
 export type WidgetHandlers = {
   onUploadFile: (docType: "aadhaar" | "pan", file: File) => void;
@@ -65,6 +66,9 @@ function WidgetRenderer({
       />
     );
   }
-  // selfie_camera / verdict added in subsequent tasks.
+  if (widget.type === "selfie_camera") {
+    return <SelfieCamera onCapture={(blob) => handlers.onSelfie(blob)} />;
+  }
+  // verdict added next.
   return null;
 }
