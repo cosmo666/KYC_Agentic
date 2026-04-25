@@ -300,18 +300,14 @@ apps/
       hooks/
         useSession.ts                   # sessionStorage-backed; cross-component sync via custom event
         useClientIP.ts                  # Resolves public IP via api.ipify.org → icanhazip fallback
+      lib/utils.ts                      # cn() helper (clsx + tailwind-merge)
 infra/
   docker-compose.yml                    # 6 services + parameterised WEB_PORT
   .env.example
   rag-corpus/                           # markdown seed corpus
   postgres/init.sql
-docs/superpowers/
-  specs/2026-04-24-conversational-kyc-agent-design.md
-  plans/2026-04-24-kyc-agent-implementation-plan.md
 docker-compose.yml                      # Root shim → infra/docker-compose.yml
 ```
-
-The full design rationale lives in [docs/superpowers/specs/2026-04-24-conversational-kyc-agent-design.md](docs/superpowers/specs/2026-04-24-conversational-kyc-agent-design.md).
 
 ## How privacy + IP is handled
 
