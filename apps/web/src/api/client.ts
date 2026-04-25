@@ -71,3 +71,8 @@ export async function confirmDoc(
   });
   return handle(r, ChatResponseSchema);
 }
+
+export async function getSession(sessionId: string): Promise<ChatResponse> {
+  const r = await fetch(`${API_URL}/session/${sessionId}`);
+  return handle(r, ChatResponseSchema);
+}

@@ -8,6 +8,7 @@ from app.config import get_settings
 from app.routers import capture as capture_router
 from app.routers import chat as chat_router
 from app.routers import confirm as confirm_router
+from app.routers import session as session_router
 from app.routers import upload as upload_router
 from app.services.ollama_client import OllamaClient
 
@@ -56,3 +57,4 @@ app.include_router(chat_router.router)
 app.include_router(upload_router.router)
 app.include_router(confirm_router.router)
 app.include_router(capture_router.router)
+app.include_router(session_router.router)

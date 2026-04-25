@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   captureImage,
   confirmDoc,
+  getSession,
   sendChat,
   uploadDoc,
 } from "@/api/client";
@@ -28,6 +29,18 @@ export function ChatShell() {
     window.addEventListener("kyc:open-camera", onOpen);
     return () => window.removeEventListener("kyc:open-camera", onOpen);
   }, []);
+
+  // Rehydrate from /session on mount if we already have a sessionId.
+  useEffect(() => {
+    if (!sessionId) return;
+    getSession(sessionId)
+      .then((res) => setMessages(res.messages))
+      .catch(() => {
+        // Stale or unknown session — leave messages empty so the user starts fresh.
+      });
+    // Run once per sessionId change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]);
 
   const appendAssistantFrom = (assistantMsgs: ChatMessage[]) => {
     setMessages((m) => [
