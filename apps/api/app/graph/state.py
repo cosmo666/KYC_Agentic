@@ -4,6 +4,8 @@ from langgraph.graph.message import add_messages
 
 NextRequired = Literal[
     "greet",
+    "ask_contact",
+    "wait_for_contact",
     "ask_name",
     "wait_for_name",
     "ask_aadhaar",
@@ -31,6 +33,8 @@ Decision = Literal["pending", "approved", "flagged", "rejected"]
 class KYCState(TypedDict, total=False):
     session_id: str
     language: str  # "en" | "hi" | "mixed"
+    email: str | None
+    mobile: str | None
     user_name: str | None
 
     aadhaar: dict  # {file_path, extracted_json, confirmed_json, photo_path, ocr_confidence}
@@ -48,3 +52,13 @@ class KYCState(TypedDict, total=False):
     decision_reason: str
     flags: list[str]
     recommendations: list[str]
+    # Set by capture_* nodes when the user's input failed validation; chat.py
+    # reads this once and passes it into the assistant-reply prompt so the
+    # next message politely re-asks. Cleared after consumption.
+    _validation_hint: str
+    # The user's real public IP, threaded in by every router from the
+    # X-Real-IP header (set by the FE via ipify). Read by the geolocation
+    # agent. MUST be declared on KYCState — LangGraph drops keys not on
+    # the schema during checkpoint round-trips, which is exactly how the
+    # agent ended up with raw_ip='' even though the route had the IP.
+    _client_ip: str

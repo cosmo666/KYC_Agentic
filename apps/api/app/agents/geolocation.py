@@ -4,10 +4,9 @@ import json
 
 from app.services.ollama_client import OllamaClient, strip_json_fence
 
-_EXTRACT_PROMPT = """Given an Indian address, extract the city and state.
-Reply with ONLY a JSON object: {"city": "", "state": ""}. Use empty strings if unsure.
-Normalise to commonly used English spellings (e.g. "Bengaluru", not "Bangaluru";
-"Mumbai", not "Bombay")."""
+_EXTRACT_PROMPT = """Extract city and state from this Indian address.
+Reply ONLY: {"city":"","state":""}. Empty strings if unsure.
+Use modern English spellings (Bengaluru not Bangalore, Mumbai not Bombay)."""
 
 
 async def extract_city_state(ollama: OllamaClient, address: str) -> dict:
@@ -72,12 +71,19 @@ async def run_geolocation(
     # ipwho.is rejects private/loopback/bogon addresses. In dev (Docker bridge)
     # that's almost always the case, so fall back to a public DNS IP.
     ip = raw_ip if _is_public_ip(raw_ip) else "8.8.8.8"
+    fallback_used = ip != raw_ip
+    print(
+        f"[geolocation] raw_ip={raw_ip!r} usable={ip!r} "
+        f"fallback={fallback_used}",
+        flush=True,
+    )
 
     async with httpx.AsyncClient() as http:
         ipc = IPWhoisClient(http)
         try:
             lookup = await ipc.lookup(ip)
         except Exception as exc:
+            print(f"[geolocation] ipwhois lookup failed for {ip}: {exc!r}", flush=True)
             lookup = {
                 "ip": ip,
                 "country": None,
@@ -86,6 +92,12 @@ async def run_geolocation(
                 "region": None,
                 "raw": {"error": str(exc)},
             }
+    print(
+        f"[geolocation] resolved {ip} -> "
+        f"country={lookup.get('country_code')!r} "
+        f"city={lookup.get('city')!r} region={lookup.get('region')!r}",
+        flush=True,
+    )
 
     country_ok = (lookup.get("country_code") or "").upper() == "IN"
 
@@ -154,6 +166,10 @@ async def run_geolocation(
         "region": lookup.get("region"),
         "city_match": city_match,
         "state_match": state_match,
+        # Lat/lon for the FE map preview. Optional — render falls back to
+        # the location pill alone when these are missing.
+        "latitude": lookup.get("latitude"),
+        "longitude": lookup.get("longitude"),
     }
 
     flags = list(state.get("flags") or [])

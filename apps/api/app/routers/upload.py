@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.graph.builder import build_graph
 from app.graph.checkpointer import open_checkpointer
 from app.schemas.chat import ChatMessage, ChatResponse, Widget
+from app.utils import get_client_ip
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -66,14 +67,29 @@ async def upload(
             "session_id": session_id,
             doc_type: {**current.get(doc_type, {}), "file_path": str(dest)},
             "next_required": f"ocr_{doc_type}",
-            "_client_ip": request.client.host if request.client else "",
+            "_client_ip": get_client_ip(request),
         }
-        new_state = await graph.ainvoke(delta, config=thread)
+        try:
+            new_state = await graph.ainvoke(delta, config=thread)
+        except Exception as exc:
+            # OCR / vision-model / parser failure. Don't crash the user's
+            # session — push the graph back to wait_for_<doc>_image so the
+            # FE can re-render the upload widget and let them retry.
+            print(f"[upload] {doc_type} intake failed: {exc!r}", flush=True)
+            recovery = {
+                "next_required": f"wait_for_{doc_type}_image",
+                "flags": [
+                    *(current.get("flags") or []),
+                    f"{doc_type}_ocr_error",
+                ],
+            }
+            await graph.aupdate_state(thread, recovery)
+            new_state = (await graph.aget_state(thread)).values
 
         new_nr = new_state["next_required"]
         language = current.get("language", "en")
         reply = await orch.generate_assistant_reply(
-            request.app.state.ollama, language, new_nr
+            request.app.state.ollama, language, new_nr, state=new_state
         )
         widget = orch.widget_for(new_nr, new_state)
         assistant_msg: dict = {"role": "assistant", "content": reply}

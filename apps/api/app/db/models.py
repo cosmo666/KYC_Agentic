@@ -29,6 +29,11 @@ class Session(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     language: Mapped[str] = mapped_column(String(8), default="en")  # "en" | "hi" | "mixed"
     status: Mapped[str] = mapped_column(String(16), default="active")  # active|completed|abandoned
+    # Captured up-front in the splash form, before the chat begins. Both nullable
+    # because rows created before the splash existed (or by a future API client
+    # that bypasses it) won't have them.
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    mobile: Mapped[str | None] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

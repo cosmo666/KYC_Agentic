@@ -17,6 +17,41 @@ _HINGLISH_HINTS = re.compile(
     re.I,
 )
 
+_EMAIL_RE = re.compile(r"^[^\s@]+@[^\s@]+\.[^\s@]+$")
+_DIGITS_RE = re.compile(r"\D+")
+_INDIAN_MOBILE_RE = re.compile(r"^[6-9]\d{9}$")
+
+
+def extract_email(text: str) -> str | None:
+    """Pull an email out of free-text user input. Returns lowercased email
+    or None if no valid email is present."""
+    if not text:
+        return None
+    candidate = text.strip().lower()
+    if _EMAIL_RE.match(candidate):
+        return candidate
+    # Scan token-by-token in case the user wrote a sentence around the email.
+    for token in re.split(r"\s+", text):
+        token = token.strip(".,;:!?()<>").lower()
+        if _EMAIL_RE.match(token):
+            return token
+    return None
+
+
+def extract_indian_mobile(text: str) -> str | None:
+    """Pull a 10-digit Indian mobile out of free-text. Strips +91/91/0
+    prefixes, spaces, dashes. Returns the 10-digit local number or None."""
+    if not text:
+        return None
+    digits = _DIGITS_RE.sub("", text)
+    if len(digits) > 10 and digits.startswith("91"):
+        digits = digits[-10:]
+    elif len(digits) == 11 and digits.startswith("0"):
+        digits = digits[1:]
+    if _INDIAN_MOBILE_RE.match(digits):
+        return digits
+    return None
+
 
 def detect_language(text: str) -> Language:
     """Cheap, deterministic language detection for the first turn.
@@ -55,14 +90,12 @@ def heuristic_intent(text: str) -> Intent:
     return "continue_flow"
 
 
-_INTENT_PROMPT = """You are the intent classifier for a KYC chat assistant. The user is mid-flow completing KYC.
+_INTENT_PROMPT = """Classify the user's latest message in a KYC chat as exactly one of:
+- continue_flow: answering the current step
+- faq: general KYC / compliance / privacy question
+- clarify: asking about the CURRENT step itself
 
-Classify the latest user message as exactly one of:
-- "continue_flow" — user is answering the current step (name, confirming a value, etc.)
-- "faq" — user is asking a general question about KYC, compliance, the process, data privacy
-- "clarify" — user is asking about the CURRENT step specifically ("what should I upload?", "why do you need this?")
-
-Respond with JSON: {"intent": "<one of the three>"}
+Respond JSON: {"intent": "..."}
 """
 
 
@@ -114,21 +147,25 @@ def update_language(state: KYCState, user_text: str) -> Language:
 
 # ─────────────────── reply generation + widget envelopes ───────────────────
 
-_REPLY_PROMPT = """You are a warm, concise KYC assistant for Indian users. Reply in the user's language.
+_REPLY_PROMPT = """You are a warm, concise KYC assistant for Indian users.
+Reply in {lang} (en=English, hi=Devanagari, mixed=Hinglish).
 
-Language code: {lang}  (en=English, hi=Hindi in Devanagari, mixed=Hinglish in Latin script)
+Task: {instruction}
 
-The workflow engine has decided the user must now do: {instruction}
-
-Do NOT invent steps. Keep the reply to 1-2 short sentences. Never mention internal state names
-(e.g. "next_required", "wait_for_aadhaar_image"). Do not ask more than one question at a time.
+Rules: 1-2 short sentences, one question max, no internal step names.
 """
 
 
 # next_required → (english instruction for LLM, static widget envelope)
 STEP_WIDGETS: dict[str, tuple[str, dict | None]] = {
+    "wait_for_contact": (
+        "Greet warmly in one sentence, then point to the form below in another. "
+        "Don't name fields. No markdown. Max 25 words.",
+        None,  # widget filled at runtime in widget_for()
+    ),
     "wait_for_name": (
-        "Ask the user for their full name.",
+        "Thank them. Now ask for their full name as it appears on their "
+        "government-issued ID.",
         None,
     ),
     "wait_for_aadhaar_image": (
@@ -161,7 +198,13 @@ STEP_WIDGETS: dict[str, tuple[str, dict | None]] = {
         "Tell the user to take a selfie for face verification.",
         {"type": "selfie_camera"},
     ),
-    "done": ("Share the KYC verdict in plain language.", None),
+    "done": (
+        "Announce the verdict from Extra context in ONE sentence (max 25 words). "
+        "Don't ask the user anything. "
+        "approved → congratulate. flagged → say a human will review. "
+        "rejected → state the reason briefly.",
+        None,
+    ),
 }
 
 
@@ -170,11 +213,24 @@ async def generate_assistant_reply(
     language: str,
     next_required: str,
     extra_context: str = "",
+    state: dict | None = None,
 ) -> str:
     instruction = STEP_WIDGETS.get(next_required, ("Continue the conversation.", None))[0]
+    # Auto-inject decision context for the terminal "done" step. Without this
+    # the LLM doesn't know the actual verdict and ends up asking the user
+    # to provide it ("Just paste the verdict here…").
+    if next_required == "done" and state is not None:
+        decision = state.get("decision") or "pending"
+        reason = state.get("decision_reason") or ""
+        verdict_ctx = f"Decision: {decision}. Reason: {reason}".strip()
+        extra_context = (
+            f"{verdict_ctx}\n\n{extra_context}".strip()
+            if extra_context
+            else verdict_ctx
+        )
     if extra_context:
         instruction = f"{instruction}\n\nExtra context: {extra_context}"
-    return await ollama.chat(
+    raw = await ollama.chat(
         [
             {
                 "role": "system",
@@ -184,6 +240,9 @@ async def generate_assistant_reply(
         ],
         temperature=0.5,
     )
+    # Models often append trailing newlines / blank lines; strip so chat
+    # bubbles don't render with empty whitespace at the bottom.
+    return raw.strip()
 
 
 _AADHAAR_FIELDS = [
@@ -212,6 +271,27 @@ def _fields_from_extracted(extracted: dict) -> list[dict]:
 def widget_for(next_required: str, state: KYCState | None = None) -> dict | None:
     """Return the widget envelope for a given step, or None if not interactive."""
     widget = STEP_WIDGETS.get(next_required, (None, None))[1]
+    if widget is None:
+        if next_required == "wait_for_contact":
+            return {
+                "type": "contact_form",
+                "fields": [
+                    {
+                        "name": "email",
+                        "label": "Email address",
+                        "value": (state or {}).get("email", "") or "",
+                        "placeholder": "you@example.com",
+                        "input_type": "email",
+                    },
+                    {
+                        "name": "mobile",
+                        "label": "Mobile number",
+                        "value": (state or {}).get("mobile", "") or "",
+                        "placeholder": "98765 43210",
+                        "input_type": "tel",
+                    },
+                ],
+            }
     if widget is None and state:
         if next_required == "wait_for_aadhaar_confirm":
             aadhaar = state.get("aadhaar", {})
@@ -228,6 +308,21 @@ def widget_for(next_required: str, state: KYCState | None = None) -> dict | None
                 "fields": _fields_from_extracted(pan.get("extracted_json", {})),
             }
         if next_required == "done":
+            # Convert /data/uploads/<sid>/<file> filesystem paths into URLs the
+            # FE can fetch via the /uploads/{sid}/{file} route. Returning
+            # relative URLs lets the FE prepend its own API base.
+            def _to_url(p: str | None) -> str | None:
+                if not p:
+                    return None
+                if p.startswith("/data/uploads/"):
+                    return p.replace("/data", "", 1)
+                return None
+
+            selfie_url = _to_url((state.get("selfie") or {}).get("file_path"))
+            aadhaar_face_url = _to_url(
+                (state.get("aadhaar") or {}).get("photo_path")
+            )
+
             return {
                 "type": "verdict",
                 "decision": state.get("decision", "pending"),
@@ -235,5 +330,13 @@ def widget_for(next_required: str, state: KYCState | None = None) -> dict | None
                 "checks": state.get("cross_validation", {}).get("checks", []),
                 "flags": state.get("flags", []),
                 "recommendations": state.get("recommendations", []),
+                # Surface every per-check payload so the verdict card can
+                # render distinct sections for face / gender / location and
+                # the user can SEE which checks ran and what each said.
+                "face_check": state.get("face_check", {}),
+                "ip_check": state.get("ip_check", {}),
+                # Image URLs for the side-by-side face comparison visual.
+                "selfie_url": selfie_url,
+                "aadhaar_face_url": aadhaar_face_url,
             }
     return widget

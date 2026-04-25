@@ -23,7 +23,6 @@ COPY pyproject.toml ./
 RUN uv sync
 
 COPY app ./app
-COPY scripts ./scripts
 COPY tests ./tests
 COPY entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh

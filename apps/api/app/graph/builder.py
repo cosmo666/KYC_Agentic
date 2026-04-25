@@ -64,14 +64,14 @@ def _extract_name(text: str) -> str:
 
 
 async def n_greet(state: KYCState) -> dict:
-    """First-ever turn. Seed language, move to name-capture."""
+    """First-ever turn. Seed language, move to the contact form step."""
     last_user = _last_user_text(state)
     language = (
         orch.update_language(dict(state), last_user)
         if last_user
         else (state.get("language") or "en")
     )
-    return {"language": language, "next_required": "wait_for_name"}
+    return {"language": language, "next_required": "wait_for_contact"}
 
 
 async def n_capture_name(state: KYCState) -> dict:

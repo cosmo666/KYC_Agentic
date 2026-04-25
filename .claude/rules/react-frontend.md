@@ -2,75 +2,113 @@
 
 ## Stack
 
-- **React 19** via **Create React App** (`react-scripts 5.0.1`) — not Next.js, not Vite, no shadcn/ui (despite what the report says — the report describes the *intended* stack)
-- **Plain CSS** in `App.css` and `index.css` — no Tailwind, no CSS modules, no styled-components
-- **`fetch` API** for HTTP — no Axios, no React Query
-- **Local component state** with `useState` / `useRef` — no Redux, no Zustand
-- **Webcam capture** via the native `navigator.mediaDevices.getUserMedia` API + a `<video>` and `<canvas>` ref pair
+- **Vite 5** (NOT Create React App, NOT Next.js).
+- **React 19** + **TypeScript 5.6**.
+- **Tailwind 3** + **shadcn/ui primitives** in `src/components/ui/` (button, card, dialog, input, label, separator, textarea). HSL variables defined in `index.css`; light/dark via the `class` strategy.
+- **Radix** primitives under the hood — `@radix-ui/react-dialog`, `react-tooltip`, `react-slot`, `react-separator`.
+- **`react-easy-crop`** for the camera-capture crop UI.
+- **`zod`** for validating every API response shape — see `src/api/schemas.ts`.
+- **Native `fetch`** for HTTP — no Axios, no React Query.
+- **Local state only** — `useState`, `useRef`, `useCallback`. No Redux, no Zustand, no React Context.
+- **`sessionStorage`** for the session id (key `kyc.sessionId`). Cleared on Restart, lost on tab close — by design.
+- **`lucide-react`** for icons.
+- **Path alias `@/*` → `src/*`** (configured in `tsconfig.json` and `vite.config.ts`).
 
 ## Project structure
 
 ```text
-kyc-frontend/
-├── public/
-├── src/
-│   ├── App.js          # Single-file SPA — chat panel, drag-drop upload, webcam, verdict
-│   ├── App.css         # All component styles
-│   ├── index.js        # ReactDOM root
-│   └── index.css       # Global resets
-├── package.json
-└── README.md           # CRA boilerplate (project README is at the repo root)
+apps/web/
+├── Dockerfile                         # Multi-stage: node:20-alpine → nginx:alpine
+├── nginx.conf                         # SPA fallback (try_files $uri /index.html)
+├── index.html
+├── package.json                       # Vite scripts: dev / build / preview / lint
+├── postcss.config.js
+├── tailwind.config.ts                 # shadcn-style HSL var theme; tailwindcss-animate plugin
+├── tsconfig.json
+├── vite.config.ts                     # @ alias, port 5173
+└── src/
+    ├── main.tsx                       # ReactDOM root + index.css
+    ├── App.tsx                        # ChatShell + FaqDrawer
+    ├── index.css                      # Tailwind layers + shadcn HSL vars (light + dark)
+    ├── api/
+    │   ├── client.ts                  # fetch helpers: sendChat, uploadDoc, captureImage, confirmDoc, getSession
+    │   └── schemas.ts                 # zod schemas + inferred TS types
+    ├── components/
+    │   ├── chat/                      # ChatShell, MessageList, ChatInput, MessageBubble
+    │   ├── widgets/                   # DocumentUploadWidget, EditableFieldCard, SelfieCamera, VerdictCard
+    │   ├── camera/CameraCaptureModal.tsx
+    │   ├── faq/FaqDrawer.tsx
+    │   └── ui/                        # shadcn primitives
+    ├── hooks/useSession.ts            # sessionStorage-backed session id
+    └── lib/utils.ts                   # cn() helper (clsx + tailwind-merge)
 ```
 
-## Single-file SPA — current state
+## API integration (`src/api/client.ts`)
 
-The whole UI lives in `App.js` (~34 KB). This is intentional for the POC, but **don't let it grow much further** — split when it crosses ~600 lines. Suggested split when the time comes:
-
-```text
-src/
-├── App.js                          # Stepper + routing between phases
-├── api.js                          # All fetch calls in one place (currently inline in App.js)
-├── hooks/
-│   └── useWebcam.js                # Encapsulate getUserMedia + canvas snapshot
-└── components/
-    ├── DocumentUpload.js           # Drag-drop + file input + preview
-    ├── ChatPanel.js                # Messages, input, suggestions
-    ├── SelfieCapture.js            # Webcam preview + capture button
-    └── KycVerdict.js               # Decision card + flag list
-```
-
-## API integration
-
-- **Base URL**: hardcoded as `const API_URL = "http://127.0.0.1:8888"` in `App.js`. **This is wrong** — the backend actually runs on `9090` (per `backend/config.py`). Fix it to `http://127.0.0.1:9090` or read from an env var (`process.env.REACT_APP_API_URL`).
-- **All requests use `fetch`** with `FormData` for multipart uploads.
-- **Always handle the error path**: `if (!response.ok) throw new Error(errData?.detail || \`Server error (${response.status})\`)`.
-- The frontend currently calls `POST /upload-doc` (root alias), `POST /chat/`, `POST /verify-face`, `POST /validate/`. If a route name changes in the backend, this file must change too.
+- **Base URL**: `import.meta.env.VITE_API_URL ?? "http://localhost:8000"`. The Docker build accepts `VITE_API_URL` as a build arg (see `apps/web/Dockerfile` and the compose `web` service).
+- **All requests use `fetch`**; multipart (`uploadDoc`, `captureImage`) builds a `FormData`, JSON (`sendChat`, `confirmDoc`) sends `application/json`.
+- **Every response is zod-parsed** through `handle(r, schema)` — never `await r.json()` directly without validating. If you add a new field on the server, update `schemas.ts` first or zod will throw.
+- The 5 client functions match the 5 backend routes (`/chat`, `/upload`, `/confirm`, `/capture`, `/session/{id}`). Don't bypass `client.ts` from a component.
 
 ## State pattern
 
-- **Stepper-driven UI**: `currentStep` (1–4) controls which screen is visible (Aadhaar upload → PAN upload → selfie → review).
-- **Results accumulate** in a `results` array (one entry per uploaded document).
-- **Chat is independent** of the stepper — it stays open across steps so the user can ask questions at any time.
-- **Webcam refs** (`videoRef`, `canvasRef`, `streamRef`) — always stop the stream (`streamRef.current.getTracks().forEach(t => t.stop())`) when the user navigates away or captures a selfie. Memory-leak prone if missed.
+- **`ChatShell` owns the conversation.** Holds `messages` (array of `ChatMessage`), `busy` (in-flight indicator), and the optional `cameraTarget` for the modal. Uses the `useSession()` hook for the persisted id.
+- **`useSession`** is a thin sessionStorage wrapper: `{ sessionId, update(id), reset() }`. Restart clears it.
+- **Server is the source of truth for flow state.** The FE never tracks `next_required` or step indices itself — it just renders whatever widget the assistant message carries. That keeps the FE oblivious to graph topology.
+- **Refresh-rehydration**: on mount, if `sessionId` exists, `getSession(sessionId)` reloads the message thread from `/session/{id}`. A 4xx is silently swallowed (treated as a fresh start) — see `ChatShell.tsx`.
+- **Camera target plumbing** uses a custom event (`window.dispatchEvent(new CustomEvent("kyc:open-camera", { detail: target }))`) because `MessageList` lives below `ChatShell` and needs to trigger the modal without prop-drilling. Acceptable for one event; if you add more inter-island events, switch to a small context.
+
+## Widget rendering
+
+The backend's `Widget` envelope has 4 types: `upload`, `editable_card`, `selfie_camera`, `verdict`. Each maps to one widget component:
+
+| `widget.type` | Component | What it does |
+|---|---|---|
+| `upload` | `DocumentUploadWidget` | File picker + camera button; calls `onUploadFile(docType, file)` or `onOpenCamera(target)` |
+| `editable_card` | `EditableFieldCard` | Form for the OCR'd fields; `onConfirm(docType, fields)` flushes to `/confirm` |
+| `selfie_camera` | `SelfieCamera` | Inline `getUserMedia` + capture button; `onSelfie(blob)` flushes to `/capture` |
+| `verdict` | `VerdictCard` | Renders `decision`, `decision_reason`, `flags`, `recommendations`, `checks` |
+
+When adding a new widget type:
+
+1. Add the literal to `WidgetType` in `apps/api/app/schemas/chat.py` AND the zod enum in `apps/web/src/api/schemas.ts` (in the same change).
+2. Add the component under `src/components/widgets/`.
+3. Wire it into `MessageList`'s widget switch and add a handler shape to `WidgetHandlers`.
+4. Map the new `next_required` literal to the widget envelope in `orchestrator.STEP_WIDGETS` or `orchestrator.widget_for(...)`.
 
 ## Styling
 
-- **`App.css` is the only stylesheet** for components. Keep selectors flat and class-based (`.upload-zone`, `.chat-panel`, etc.) — no nesting depth, no `:has()` tricks for the POC.
-- **No design system / no shadcn/ui** despite the report. If you introduce one later, do it in a single PR and migrate components in batches.
-- **Mobile-first**: test at 360px wide. The KYC users this targets are predominantly mobile-first.
-- **Hindi/English support** — the assistant's text comes from the backend's `chat` response. The UI labels (`STEPS = [...]`) are English-only today; localise via a simple lookup dict before adding more languages.
+- **Tailwind only.** No CSS modules, no styled-components, no inline `style={...}` for anything other than dynamic dimensions.
+- **Use shadcn primitives from `components/ui/`.** They're already themed against the CSS variables in `index.css`. Don't reach for raw Radix unless a primitive is missing.
+- **`cn()` helper** in `lib/utils.ts` merges class strings — use it instead of template-string concatenation when conditional classes are involved.
+- **Mobile-first**: the user base is predominantly mobile. Test at 360px wide. The chat shell already caps at `max-w-2xl mx-auto`; don't break that container.
+- **HSL variables** (`--background`, `--foreground`, `--primary`, …) are the source of truth for colour. Don't hard-code Tailwind palette colours (`bg-blue-500` etc.) for anything user-facing.
+
+## Camera lifecycle
+
+- `SelfieCamera` and `CameraCaptureModal` both call `navigator.mediaDevices.getUserMedia`. **Always stop tracks on unmount or capture** — `streamRef.current.getTracks().forEach(t => t.stop())`. Forgetting this leaves the camera light on after the user moves on.
+- `CameraCaptureModal` uses `react-easy-crop` for the doc-upload-via-camera path; the cropped blob is what gets POSTed to `/capture`. Selfie capture is full-frame, no crop.
+- Always present a **visible permission prompt** — never start the stream silently on page load.
+
+## Internationalisation
+
+- The assistant's reply text is generated server-side in the user's language (`en` / `hi` / `mixed`) — the FE just renders it.
+- **UI chrome** (button labels, "Restart", "KYC Agent" header) is English-only today. If you localise, do it via a single dict under `src/lib/i18n.ts`; don't pull in `react-i18next` for a few strings.
 
 ## Accessibility
 
-- Webcam capture must have a **visible permission prompt** — never start the stream silently on page load.
-- Drag-and-drop zones must also accept a **standard file input click** (the current code does this — keep it that way).
-- Verdict text should be **screen-reader friendly**: avoid emoji-only status indicators; pair them with text ("✅ Approved", not just "✅").
+- Never use emoji-only status indicators in the verdict; pair them with text ("Approved", not just "✅").
+- Drag-and-drop zones must also accept a standard file input click (the current `DocumentUploadWidget` does this — keep it that way).
+- Dialogs (Radix `Dialog`) handle focus trapping for free; don't add custom focus management on top.
 
 ## Anti-patterns to avoid
 
-- ❌ Mutating the `API_URL` per environment by hand — read from `REACT_APP_API_URL` env var so dev / staging / prod don't require code edits.
-- ❌ Storing extracted Aadhaar / PAN values in `localStorage` or `sessionStorage` — keep them in component state only; they vanish on reload by design.
-- ❌ Forgetting to stop the webcam stream — leads to the camera light staying on after the user moves on.
-- ❌ Adding a router (`react-router`) for one or two screens — the stepper handles it.
-- ❌ Pulling in a UI kit "just for one component" — every dependency is a 100KB+ bundle hit.
-- ❌ Calling backend endpoints directly from deeply-nested components — funnel through a single `api.js` once the file is split.
+- ❌ Hard-coding the API URL — use `import.meta.env.VITE_API_URL`. The Docker build wires this in.
+- ❌ Storing extracted Aadhaar / PAN values in `localStorage` or `sessionStorage` — only the `sessionId` persists. PII vanishes on tab close by design.
+- ❌ Forgetting to stop the webcam stream on unmount.
+- ❌ Adding a router (`react-router-dom`) — the chat shell is the only route; the FAQ is a drawer overlay, not a navigation.
+- ❌ Pulling in a new UI kit or icon set when shadcn + lucide already covers it.
+- ❌ Calling `fetch` directly from a component — go through `src/api/client.ts`.
+- ❌ Skipping zod validation on a response — if the schema breaks, you want a loud parse error, not undefined fields silently rendering.
+- ❌ Tracking `next_required` in component state — the server owns flow, the client renders.
+- ❌ Inlining colours (`#0b66ff`, `bg-blue-500`) — use the shadcn HSL vars.

@@ -28,7 +28,7 @@ This project targets the **eKYC** experience and replaces the form-driven UI wit
 - 12-digit unique identifier, issued by the **Unique Identification Authority of India (UIDAI)**.
 - Carries: **name, DOB, gender, address, photo, Aadhaar number**, and a QR code.
 - Bilingual layout (English + a regional language — Hindi for north India, others vary).
-- **Mask the first 8 digits** before storing or displaying (`XXXX XXXX 1234`). This is non-negotiable per UIDAI rules — the prompt in `ocr_service.py` enforces this and downstream code must too.
+- **Mask the first 8 digits** before storing or displaying (`XXXX XXXX 1234`). This is non-negotiable per UIDAI rules — `AADHAAR_PROMPT` in `apps/api/app/agents/intake.py` instructs the vision model to mask, and `mask_aadhaar()` in the same module re-applies the mask after extraction. `apps/api/app/routers/confirm.py` re-masks again on confirm in case the user un-masked during edit. Don't let an unmasked number reach Postgres or the FE.
 - Common variants: original printed Aadhaar, e-Aadhaar PDF, mAadhaar QR, plastic card.
 
 ### PAN (Permanent Account Number)
@@ -54,7 +54,7 @@ When a user submits both Aadhaar and PAN, the assistant cross-validates:
 
 | Field | Rule | Weight in score |
 |---|---|---|
-| **Full name** | Jaccard similarity ≥ 0.80 → pass; 0.50–0.80 → warn (spelling variant); < 0.50 → fail | 0.5 |
+| **Full name** | Jaccard similarity ≥ 0.75 → pass; 0.50–0.75 → warn (spelling variant); < 0.50 → fail | 0.5 |
 | **Date of birth** | Exact match after normalising to `DD/MM/YYYY` | 0.3 |
 | **Document types** | Both correctly classified (Aadhaar + PAN) | 0.1 |
 | **OCR confidence** | Average of per-document confidence (`high`=1.0, `medium`=0.6, `low`=0.2) | 0.1 |
@@ -62,9 +62,9 @@ When a user submits both Aadhaar and PAN, the assistant cross-validates:
 Realistic edge cases the validator must handle:
 
 - **Initials vs full names**: Aadhaar shows `Rajesh Kumar Sharma`, PAN shows `R K Sharma` — Jaccard catches the partial overlap.
-- **Honorifics**: `Smt. Geeta Devi` vs `Geeta Devi` — `_normalize_name` strips Indian titles.
-- **Hindi vs English transliteration**: Aadhaar in both scripts; OCR returns the English line. Mismatched transliterations (`Krishan` vs `Krishna`) trigger a `warn`.
-- **DOB formats**: Aadhaar shows `DD/MM/YYYY`; PAN sometimes shows `DD-MM-YYYY`. `_normalize_dob` handles both plus `YYYY-MM-DD`.
+- **Honorifics**: `Smt. Geeta Devi` vs `Geeta Devi` — `normalize_name` in `apps/api/app/agents/validation.py` strips Indian titles (`mr`, `mrs`, `ms`, `miss`, `dr`, `shri`, `smt`, `km`, `kumari`, plus Devanagari `श्री`, `श्रीमती`, `श्रीमान`, `कुमारी`, `कुमार`).
+- **Hindi vs English transliteration**: Aadhaar in both scripts; OCR returns the English line. Mismatched transliterations (`Krishan` vs `Krishna`) typically trigger a `warn`.
+- **DOB formats**: Aadhaar shows `DD/MM/YYYY`; PAN sometimes shows `DD-MM-YYYY`. `normalize_dob` accepts both plus `YYYY-MM-DD` and `DD MM YYYY`.
 
 ## Face verification
 
@@ -89,14 +89,15 @@ Today, a printed photograph or a short video clip can pass the face match. The r
 
 ## Decision policy
 
-Every KYC case ends in one of four decisions:
+Every KYC case ends in one of three decisions in the current code (`incomplete` was a fourth value in the previous MVP and is no longer emitted — incomplete cases keep the user on the relevant `wait_for_*` step instead of terminating).
 
 | Decision | Meaning | What happens next |
 |---|---|---|
-| **`approved`** | All checks pass with high confidence | Account opens / product activates |
-| **`flagged`** | Borderline — score 60–79 or low face confidence | Goes to a human KYC officer (24h SLA per the UI message) |
-| **`rejected`** | Critical mismatch (name / DOB) or score < 60 | User asked to re-submit / contact support |
-| **`incomplete`** | Required documents missing | User asked to upload the missing document |
+| **`approved`** | Score ≥ 80 AND face_ok | Account opens / product activates |
+| **`flagged`** | Borderline — score 60–79, or score 40–59 with no critical fails | Goes to a human KYC officer |
+| **`rejected`** | Country gate failed, critical name/DOB mismatch, no face detected, or score below the borderline band | User asked to re-submit / contact support |
+
+The full gate order is encoded in `apps/api/app/agents/decision.py:compute_decision`. The **country gate is applied first** — a non-IN IP rejects the case before the score-band logic runs (this can also be pre-set from `geolocation.py` so the user gets the country-rejection reason rather than a generic threshold message).
 
 **Why this matters**: a `flagged` case is *not a denial* — it's a routing decision. The UI copy should make this clear. A `rejected` case might still be recoverable with a clearer photo, so the recommendations should explain that.
 
@@ -113,7 +114,7 @@ The current POC does not implement record retention or audit logging at the dept
 
 ## Conversational design rules
 
-The assistant's tone (per `chat_service.py` SYSTEM_PROMPT):
+The assistant's tone (per `_REPLY_PROMPT` and `_INTENT_PROMPT` in `apps/api/app/agents/orchestrator.py`):
 
 - **Bilingual by default** — Hindi or English, decided by the user's first message.
 - **One thing at a time** — never ask for two pieces of information in one prompt.

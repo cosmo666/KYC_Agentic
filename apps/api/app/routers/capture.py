@@ -14,6 +14,7 @@ from app.db.session import get_db
 from app.graph.builder import build_graph
 from app.graph.checkpointer import open_checkpointer
 from app.schemas.chat import ChatMessage, ChatResponse, Widget
+from app.utils import get_client_ip
 
 router = APIRouter(prefix="/capture", tags=["capture"])
 
@@ -57,7 +58,7 @@ async def capture(
         dest = upload_dir / f"{target}{suffix}"
         dest.write_bytes(await file.read())
 
-        client_ip = request.client.host if request.client else ""
+        client_ip = get_client_ip(request)
         if target == "selfie":
             delta = {
                 "session_id": session_id,
@@ -76,12 +77,25 @@ async def capture(
                 "_client_ip": client_ip,
             }
 
-        new_state = await graph.ainvoke(delta, config=thread)
+        try:
+            new_state = await graph.ainvoke(delta, config=thread)
+        except Exception as exc:
+            # Mirror upload.py — surface a retry-able state instead of a 500.
+            print(f"[capture] {target} agent failed: {exc!r}", flush=True)
+            recovery = {
+                "next_required": f"wait_for_{target}" if target == "selfie" else f"wait_for_{target}_image",
+                "flags": [
+                    *(current.get("flags") or []),
+                    f"{target}_capture_error",
+                ],
+            }
+            await graph.aupdate_state(thread, recovery)
+            new_state = (await graph.aget_state(thread)).values
 
         new_nr = new_state["next_required"]
         language = current.get("language", "en")
         reply = await orch.generate_assistant_reply(
-            request.app.state.ollama, language, new_nr
+            request.app.state.ollama, language, new_nr, state=new_state
         )
         widget = orch.widget_for(new_nr, new_state)
         assistant_msg: dict = {"role": "assistant", "content": reply}

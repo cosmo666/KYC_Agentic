@@ -100,9 +100,10 @@ services:
       - "8000:8000"
     volumes:
       - uploads:/data/uploads
-      - ../apps/api/app:/app/app      # dev hot-reload
-      - ../apps/api/tests:/app/tests  # run pytest inside container
-      - ./rag-corpus:/corpus:ro       # RAG seed corpus (read-only)
+      - ../apps/api/app:/app/app          # dev hot-reload
+      - ../apps/api/tests:/app/tests      # run pytest inside container
+      - ./rag-corpus:/corpus:ro           # RAG seed corpus (read-only)
+      - deepface_cache:/root/.deepface    # persist VGG-Face weights (~580 MB) across container restarts
     extra_hosts:
       - "host.docker.internal:host-gateway"  # needed on Linux for Ollama
 
@@ -116,10 +117,12 @@ services:
     depends_on:
       - api
     ports:
-      - "5173:80"
+      # Override with WEB_PORT in .env if 5173 is held by a Vite dev server.
+      - "${WEB_PORT:-5173}:80"
 
 volumes:
   postgres_data:
   qdrant_data:
   langfuse_data:
   uploads:
+  deepface_cache:

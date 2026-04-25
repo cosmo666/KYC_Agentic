@@ -2,92 +2,133 @@
 
 ## What this project is
 
-The **Conversational KYC Assistant with Agentic Workflow** — a working Proof of Concept that lets Indian users complete a Know Your Customer (KYC) check by **chatting with an assistant** instead of filling out a multi-step form. The assistant talks to the user in **Hindi or English**, walks them through document upload and selfie capture one step at a time, and runs the verification silently in the background through an agentic pipeline.
+The **Conversational KYC Agent** — a chat-first Indian KYC (Know Your Customer) flow built as a **LangGraph multi-agent pipeline**. The user chats in Hindi or English, uploads an Aadhaar then a PAN card, takes a selfie, and gets a verdict (`approved` / `flagged` / `rejected`). Every step writes to its own Postgres table; LLM calls are observable in self-hosted Langfuse; compliance Q&A is grounded in a Qdrant RAG corpus.
 
-This is **Swarnima Negi's B.Tech internship project at Ramrao Adik Institute of Technology** (RAIT), supervised by Dr. Vishakha K. Gaikwad. The full report — `Conversational_KYC_Internship_Report (1).docx` at the project root — is the canonical source of intent, motivation, and roadmap.
+Originally **Swarnima Negi's B.Tech internship project at Ramrao Adik Institute of Technology** (RAIT), supervised by Dr. Vishakha K. Gaikwad. The internship report — `Conversational_KYC_Internship_Report (1).docx` at the repo root — captures the original intent, but **the report describes the prior MVP**, not the current architecture. Treat the report as historical context; treat the spec at `docs/superpowers/specs/2026-04-24-conversational-kyc-agent-design.md` as the canonical design.
 
-## Important: report vs. code
+## Current status (v0.1.0, tagged 2026-04-25)
 
-The report describes the *intended* architecture. The repo today is a simpler MVP. When recommending changes, ground them in **what's actually in the code**, not what the report says exists. Specific divergences:
+The full implementation plan in `docs/superpowers/plans/2026-04-24-kyc-agent-implementation-plan.md` is executed end-to-end. 6 services run via docker compose; 34 backend pytests pass; the chat → upload → confirm → selfie → verdict path is verified on the live stack.
 
-| Report claims | Code reality |
+**Two known divergences from the plan** (see git history of v0.1.0):
+
+1. The "fresh-clone simulation" (`docker compose down -v` + rebuild) was skipped to preserve user test data. The clone-and-run path therefore has positive-signal evidence (image builds, services come up) but no end-to-end "destroy-and-rebuild" proof.
+2. The web container was built but not `docker compose up`-ed — port 5173 was held by a Vite dev server. Validated standalone on 5174 instead.
+
+## Stack (actual)
+
+| Layer | Tech |
 |---|---|
-| LangGraph agentic workflow | Hand-rolled ordered list of pure functions over a `KYCState` dataclass — same shape, no `langgraph` dependency |
-| Gemini Vision for OCR | Local Ollama (`gemma3:4b-cloud`) for both OCR and chat |
-| PostgreSQL data layer | No database yet — uploads sit in `backend/uploads/` |
-| RAG pipeline grounded on compliance docs | Plain Ollama chat with a KYC system prompt |
-| shadcn/ui frontend | Plain Create React App + hand-CSS |
-| MediaPipe liveness, gender/age, TTS, admin module | Roadmap items, not implemented |
-
-These gaps are **intentional and acknowledged in the report's "future work" section**. The POC stops at the demonstrable end-to-end flow.
-
-## End-to-end flow (current)
-
-1. **Greeting / chat** — assistant introduces KYC in plain language, bilingual.
-2. **Document upload** — Aadhaar then PAN, drag-and-drop or file picker.
-3. **Vision OCR** — Ollama vision model extracts name, DOB, doc number, address, gender → `ExtractedData`.
-4. **Selfie capture** — webcam in the browser.
-5. **Face verification** — DeepFace (VGG-Face) compares selfie ↔ document photo, returns confidence.
-6. **Cross-validation** — Jaccard name match + exact DOB match + doc-type check + OCR-confidence check, weighted-scored.
-7. **Decision** — `approved` / `flagged` / `rejected` / `incomplete`, with flags (for reviewers) and recommendations (for the user).
-
-## Stack
-
-- **Frontend**: React 19 (Create React App), single-file `kyc-frontend/src/App.js`. Plain CSS. Webcam via native `getUserMedia`.
-- **Backend**: Python 3.11+, FastAPI on port `9090`, Uvicorn.
-- **AI**: Ollama (`gemma3:4b-cloud`) for vision OCR and chat; DeepFace for face match; Tesseract as the offline OCR fallback.
-- **Storage**: filesystem (`backend/uploads/`); no DB yet.
+| Backend | Python 3.11, FastAPI, LangGraph (`langgraph >= 0.2.50`), LangGraph `AsyncPostgresSaver` for checkpointing, SQLAlchemy 2 async + Alembic |
+| Datastores | Postgres 16 (domain tables + LangGraph checkpoints), Qdrant (RAG vectors), separate Langfuse Postgres |
+| AI | Ollama on the host: chat = `gemma3:27b-cloud`, OCR (vision) = `ministral-3:14b-cloud`, embeddings = `bge-m3:latest`. Real values come from `infra/.env` via docker-compose; `apps/api/app/config.py` carries the same IDs as code defaults. Don't change pinned model IDs without coordination — see memory `feedback_model_changes`. |
+| Face match | DeepFace VGG-Face (cosine), gender via DeepFace.analyze; lazy-imported to avoid TF startup cost |
+| Geolocation | ipwho.is via `ipwhois_client.py` |
+| Observability | Self-hosted Langfuse 2.x |
+| Frontend | Vite 5 + React 19 + TypeScript 5 + Tailwind 3 + shadcn/ui primitives + Radix Dialog/Tooltip + react-easy-crop + zod |
+| Storage | Postgres for everything domain-level; uploads on a Docker volume (`/data/uploads/<session_id>/<doc>.<ext>`) |
+| Infra | Docker Compose with 6 services: `postgres`, `qdrant`, `langfuse-db`, `langfuse`, `api`, `web` |
 
 ## Repo layout
 
 ```text
 KYC_Agentic/
-├── backend/                            # FastAPI service
-│   ├── main.py                         # App, CORS, routers, /upload-doc legacy alias
-│   ├── config.py                       # .env loading
-│   ├── routers/  documents.py, chat.py, face.py, validation.py
-│   ├── services/ ocr_service.py, chat_service.py, face_service.py,
-│   │             validation_service.py, workflow_service.py
-│   ├── models/   schemas.py, chat_schemas.py
-│   └── uploads/                        # File storage; gitignored
-├── kyc-frontend/                       # React 19 SPA
-│   └── src/App.js                      # Whole UI lives here for the POC
+├── apps/
+│   ├── api/                          # FastAPI + LangGraph backend
+│   │   ├── Dockerfile, entrypoint.sh, pyproject.toml
+│   │   ├── app/
+│   │   │   ├── main.py               # App factory, CORS, /health, router registration
+│   │   │   ├── config.py             # pydantic-settings; .env-driven
+│   │   │   ├── agents/               # 7 specialist agents (see below)
+│   │   │   ├── graph/                # KYCState, builder, AsyncPostgresSaver checkpointer
+│   │   │   ├── routers/              # /chat, /upload, /confirm, /capture, /session
+│   │   │   ├── services/             # ollama_client, deepface_runner, ipwhois_client, rag, langfuse_client
+│   │   │   ├── db/                   # SQLAlchemy models + Alembic migrations
+│   │   │   ├── schemas/chat.py       # Pydantic chat I/O + Widget envelope
+│   │   │   └── scripts/              # reindex_rag.py
+│   │   └── tests/                    # pytest (parsers, validation math, decision thresholds, mocks)
+│   └── web/                          # Vite + React 19 + TS + Tailwind + shadcn
+│       ├── Dockerfile, nginx.conf
+│       └── src/
+│           ├── App.tsx               # ChatShell + FaqDrawer
+│           ├── api/                  # client.ts, schemas.ts (zod-validated)
+│           ├── components/
+│           │   ├── chat/             # ChatShell, MessageList, ChatInput, MessageBubble
+│           │   ├── widgets/          # DocumentUpload, EditableFieldCard, SelfieCamera, VerdictCard
+│           │   ├── camera/           # CameraCaptureModal (react-easy-crop)
+│           │   ├── faq/              # FaqDrawer + FAB
+│           │   └── ui/               # shadcn primitives
+│           └── hooks/useSession.ts   # sessionStorage-backed session id
+├── infra/
+│   ├── docker-compose.yml            # 6 services
+│   ├── postgres/init.sql
+│   └── rag-corpus/                   # markdown seed corpus for the FAQ agent
+├── docs/superpowers/
+│   ├── specs/2026-04-24-conversational-kyc-agent-design.md  # canonical design
+│   └── plans/2026-04-24-kyc-agent-implementation-plan.md    # 16-phase build plan
 ├── .claude/
-│   ├── rules/
-│   │   ├── python-fastapi-backend.md   # Backend conventions
-│   │   ├── react-frontend.md           # Frontend conventions
-│   │   └── agentic-workflow.md         # Workflow / decision-policy conventions
-│   └── skills/kyc-domain/SKILL.md      # Indian KYC regulatory + Aadhaar/PAN domain
-├── Conversational_KYC_Internship_Report (1).docx
-├── CLAUDE.md                           # ← this file
-└── README.md
+│   ├── rules/                        # Conventions for backend, frontend, agentic workflow
+│   └── skills/kyc-domain/SKILL.md    # Indian KYC domain knowledge
+├── Conversational_KYC_Internship_Report (1).docx  # Historical context
+├── CLAUDE.md                         # ← this file
+└── README.md                         # Clone-and-run guide
 ```
+
+## End-to-end flow
+
+1. **Chat opens** — `ChatShell` mounts; if a `sessionId` is in sessionStorage, `getSession` rehydrates the message thread from `/session/{id}`.
+2. **Greeting** — orchestrator detects language from the first turn; assistant introduces itself and asks for the user's name.
+3. **Aadhaar upload** — file picker or in-browser camera (`CameraCaptureModal` with crop). `POST /upload` saves the file, the LangGraph runs `intake_aadhaar` (Ollama vision OCR via `ministral-3:8b-cloud`).
+4. **Aadhaar confirm** — `EditableFieldCard` widget shows extracted fields; user confirms or edits. `POST /confirm` saves `confirmed_json` to the `documents` row.
+5. **PAN upload + confirm** — same pattern.
+6. **Selfie** — `SelfieCamera` widget captures via `getUserMedia`. `POST /capture` saves the file, the graph runs `biometric` (DeepFace VGG-Face cosine + gender analysis).
+7. **Geolocation** — `geolocation` agent calls ipwho.is on the client IP, classifies city/state against the Aadhaar address. **Country gate** — non-IN IP → `rejected`.
+8. **Decision** — `decision` agent applies thresholds, persists to `kyc_records`, returns the `verdict` widget.
+
+The user can **tap the ❓ FAB** at any time. That fires the `compliance` agent (RAG over Qdrant with bge-m3 embeddings); answer + sources are persisted to `compliance_qna`.
+
+## The seven agents
+
+All in `apps/api/app/agents/`. Each is a pure async function over the `KYCState` TypedDict; nodes return **delta dicts**, not the whole state, so the `add_messages` reducer doesn't double-count.
+
+| Agent | File | Responsibility |
+|---|---|---|
+| Orchestrator | `orchestrator.py` | Language detection (`en`/`hi`/`mixed`), 2-turn streak switching, intent classification (`continue_flow`/`faq`/`clarify`), reply generation, `widget_for(next_required, state)` mapping |
+| Intake | `intake.py` | Vision OCR via Ollama; Aadhaar masking; confidence heuristic (`high`/`medium`/`low`); writes `documents` |
+| Validation | `validation.py` | Cross-doc Jaccard name match, exact DOB match, doc-type sanity, OCR-confidence; weighted score 0-100; writes `validation_results` |
+| Biometric | `biometric.py` | DeepFace.verify selfie ↔ Aadhaar photo; DeepFace.analyze for gender; writes `selfies` + `face_checks` |
+| Geolocation | `geolocation.py` | ipwho.is lookup; LLM-extracted city/state from Aadhaar address; **country gate**; writes `ip_checks` |
+| Compliance | `compliance.py` | RAG retrieve from Qdrant + Ollama answer with cited sources; writes `compliance_qna` |
+| Decision | `decision.py` | Pure threshold logic; writes `kyc_records`; marks session `completed` |
 
 ## Conventions — read these before touching code
 
-The rules in `.claude/rules/` are the working agreements. Brief pointers:
+The rules in `.claude/rules/` are the working agreements for this repo, kept in sync with the actual code:
 
-- **`python-fastapi-backend.md`** — router/service split, OCR fallback chain, lazy DeepFace import, Aadhaar masking, no DB.
-- **`react-frontend.md`** — single-file SPA today; split when it crosses ~600 lines; webcam stream cleanup; `API_URL` should read from env.
-- **`agentic-workflow.md`** — how to add a node, decision thresholds, validation weights, audit replay.
+- **`python-fastapi-backend.md`** — router/agent split, LangGraph node pattern, async sessions, pg_insert with on_conflict_do_update, lazy DeepFace, Aadhaar masking, env wiring.
+- **`react-frontend.md`** — Vite + React 19 + TS, zod-validated API client, shadcn primitives in `components/ui/`, Tailwind only, sessionStorage rehydration, camera lifecycle.
+- **`agentic-workflow.md`** — how the LangGraph is wired, conditional entry on `next_required`, wait-states, decision thresholds, validation weights, audit replay via the checkpoint.
 - **`.claude/skills/kyc-domain/SKILL.md`** — Aadhaar/PAN format rules, RBI compliance touchpoints, conversational tone rules.
 
 ## Coding style
 
-- **Plain over clever** — the report's audience includes non-experts; the code should read the same way.
-- **Comments explain *why*, not *what*** — well-named functions document themselves.
-- **Files under ~300 lines**; split when they grow past that. The single-file `App.js` is a known exception flagged for splitting.
-- **Never log or persist unmasked PII** — Aadhaar numbers must be masked (`XXXX XXXX 1234`) before storage or display, per UIDAI rules.
-- **Never break the user's flow on a backend error** — surface a friendly message + a recovery action (retake photo, re-upload, etc.).
+- **Plain over clever** — most readers (including the original author) are early-career; the code should read top-to-bottom without surprise.
+- **Comments explain *why*, not *what*** — most functions don't need comments at all.
+- **Files under ~300 lines** — split when they grow past that. The single-router files in `routers/` repeat some boilerplate around graph hydration / message persistence; that duplication is intentional for now.
+- **Never log or persist unmasked PII** — Aadhaar numbers must be masked (`XXXX XXXX 1234`) before storage or display, per UIDAI rules. The mask is enforced in `intake.py` (`mask_aadhaar`) and re-applied in `confirm.py` if the user tried to un-mask during edit.
+- **Never break the user's flow on a backend error** — surface a friendly message and a recovery action (retake photo, re-upload, etc.).
+- **Never silently swap pinned model IDs** — see memory `feedback_model_changes`. If a model needs to change, raise it explicitly first.
 
 ## Running the project
 
-See the project root `README.md` for setup, environment variables, and the dev loop.
+See [`README.md`](README.md) for clone-and-run, environment variables, and the dev loop.
 
 ## Things to flag before merging
 
-- New dependencies in `backend/requirements.txt` or `kyc-frontend/package.json` — keep the surface small.
-- Anything that changes the workflow node order or decision thresholds — these encode the project's risk policy.
-- Any new field in `ExtractedData` that the FE will display — verify the FE actually renders it.
-- Anything that writes to disk outside `backend/uploads/`.
+- New dependencies in `apps/api/pyproject.toml` or `apps/web/package.json` — keep the surface small; every dep is a build/audit cost.
+- Any change to `WORKFLOW_GRAPH` node order, the `NextRequired` literal set, or decision thresholds — these encode the project's risk policy and are referenced from the plan and spec.
+- New fields in the `Widget` schema — must land simultaneously in `apps/api/app/schemas/chat.py` and `apps/web/src/api/schemas.ts`, plus the relevant widget component.
+- Any new `documents` field that the FE will render — verify the `EditableFieldCard` actually shows it.
+- Anything that writes to disk outside `/data/uploads/<session_id>/`.
 - Anything that touches PII handling (storage, display, logging).
+- Migration changes — Alembic migrations live under `apps/api/app/db/migrations/`. Don't edit a shipped migration; add a new one.

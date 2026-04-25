@@ -18,6 +18,7 @@ from app.graph.builder import build_graph
 from app.graph.checkpointer import open_checkpointer
 from app.schemas.chat import ChatMessage, ChatRequest, ChatResponse, Widget
 from app.services.rag import RAGService
+from app.utils import get_client_ip
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -67,7 +68,7 @@ async def chat(
         ainvoke_input: dict = {
             "messages": [user_msg_dict],
             "language": language,
-            "_client_ip": request.client.host if request.client else "",
+            "_client_ip": get_client_ip(request),
         }
         if not has_prior_state:
             ainvoke_input["session_id"] = session_id
@@ -105,9 +106,8 @@ async def chat(
                     {
                         "role": "system",
                         "content": (
-                            "You are a KYC assistant. The user asked for "
-                            f"clarification about the current step ({nr_before}). "
-                            f"Reply in language={language}. One or two sentences."
+                            f"KYC assistant. Clarify the current step ({nr_before}) "
+                            f"to the user. Reply in {language}. 1-2 sentences."
                         ),
                     },
                     {"role": "user", "content": req.text},
@@ -128,17 +128,55 @@ async def chat(
             assistant_msg = {"role": "assistant", "content": clarification}
             widget = None
         else:
-            # Run the graph one step — its entry conditional routes on next_required.
-            new_state_values = await graph.ainvoke(ainvoke_input, config=thread)
+            # Special case: at wait_for_contact, the contact_form widget is the
+            # ONLY way to advance — typed messages don't auto-extract. Reply
+            # politely pointing back to the form rather than running the graph.
+            if nr_before == "wait_for_contact":
+                reply_text = (
+                    "Please share your email and mobile using the form above to begin."
+                )
+                widget = None
+                assistant_msg = {"role": "assistant", "content": reply_text}
+                await graph.aupdate_state(
+                    thread,
+                    {
+                        "messages": [user_msg_dict, assistant_msg],
+                        "language": language,
+                    },
+                )
+                new_state_values = (await graph.aget_state(thread)).values
+            else:
+                # Run the graph one step — its entry conditional routes on next_required.
+                new_state_values = await graph.ainvoke(ainvoke_input, config=thread)
 
-            new_nr = new_state_values.get("next_required", "done")
-            reply_text = await orch.generate_assistant_reply(ollama, language, new_nr)
-            widget = orch.widget_for(new_nr, new_state_values)
-            assistant_msg = {"role": "assistant", "content": reply_text}
-            if widget:
-                assistant_msg["widget"] = widget
+                new_nr = new_state_values.get("next_required", "done")
+                hint = new_state_values.get("_validation_hint", "")
+                reply_text = (
+                    await orch.generate_assistant_reply(
+                        ollama,
+                        language,
+                        new_nr,
+                        extra_context=hint,
+                        state=new_state_values,
+                    )
+                ).strip()  # LLMs sometimes append trailing newlines.
+                widget = orch.widget_for(new_nr, new_state_values)
+                assistant_msg = {"role": "assistant", "content": reply_text}
+                if widget:
+                    assistant_msg["widget"] = widget
 
-            await graph.aupdate_state(thread, {"messages": [assistant_msg]})
+                updates: dict = {"messages": [assistant_msg]}
+                if hint:
+                    updates["_validation_hint"] = ""
+                await graph.aupdate_state(thread, updates)
+
+                # Persist newly-captured email / mobile to the sessions row.
+                new_email = new_state_values.get("email")
+                new_mobile = new_state_values.get("mobile")
+                if new_email and sess.email != new_email:
+                    sess.email = new_email
+                if new_mobile and sess.mobile != new_mobile:
+                    sess.mobile = new_mobile
 
         # Persist messages to the domain table, skipping rows we've already written.
         existing_count = (

@@ -26,6 +26,10 @@ postgres_data/
 qdrant_data/
 langfuse_data/
 
+# Local PII fixture folders (real Aadhaar / PAN images, never commit)
+/aadhar/
+/pan/
+
 # IDE
 .vscode/
 .idea/

@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import models as m
 from app.graph.state import KYCState
+from pathlib import Path
+
 from app.services.deepface_runner import analyze_gender, verify_faces
 
 
@@ -31,10 +33,26 @@ async def run_biometric(state: KYCState, db: AsyncSession) -> dict:
     reference = aadhaar_slot.get("photo_path") or aadhaar_slot.get("file_path")
 
     if not selfie_path or not reference:
+        print(
+            f"[biometric] missing inputs: selfie={selfie_path!r} reference={reference!r}",
+            flush=True,
+        )
         return {"next_required": "wait_for_selfie"}
 
+    using_crop = reference == aadhaar_slot.get("photo_path")
+    print(
+        f"[biometric] verify selfie={Path(selfie_path).name} vs "
+        f"reference={Path(reference).name} (cropped_face={using_crop})",
+        flush=True,
+    )
     # DeepFace is sync + CPU-bound; run off the event loop.
     verify_res = await asyncio.to_thread(verify_faces, selfie_path, reference)
+    print(
+        f"[biometric] verify result: faces_detected={verify_res.get('faces_detected')} "
+        f"verified={verify_res.get('verified')} distance={verify_res.get('distance'):.3f} "
+        f"confidence={verify_res.get('confidence'):.1f}%",
+        flush=True,
+    )
 
     aadhaar_fields = (
         aadhaar_slot.get("confirmed_json")
@@ -50,6 +68,11 @@ async def run_biometric(state: KYCState, db: AsyncSession) -> dict:
     gender_match = None
     if aadhaar_gender and predicted:
         gender_match = aadhaar_gender == predicted
+    print(
+        f"[biometric] gender: aadhaar={aadhaar_gender!r} "
+        f"predicted={predicted!r} match={gender_match}",
+        flush=True,
+    )
 
     # Persist selfie + face_check rows.
     session_uuid = uuid.UUID(state["session_id"])

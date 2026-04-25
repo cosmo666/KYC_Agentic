@@ -15,6 +15,7 @@ from app.db.session import get_db
 from app.graph.builder import build_graph
 from app.graph.checkpointer import open_checkpointer
 from app.schemas.chat import ChatMessage, ChatResponse, Widget
+from app.utils import get_client_ip
 
 router = APIRouter(prefix="/confirm", tags=["confirm"])
 
@@ -78,14 +79,14 @@ async def confirm(
             "session_id": req.session_id,
             req.doc_type: slot,
             "next_required": next_step,
-            "_client_ip": request.client.host if request.client else "",
+            "_client_ip": get_client_ip(request),
         }
         new_state = await graph.ainvoke(delta, config=thread)
 
         new_nr = new_state["next_required"]
         language = current.get("language", "en")
         reply = await orch.generate_assistant_reply(
-            request.app.state.ollama, language, new_nr
+            request.app.state.ollama, language, new_nr, state=new_state
         )
         widget = orch.widget_for(new_nr, new_state)
         assistant_msg: dict = {"role": "assistant", "content": reply}

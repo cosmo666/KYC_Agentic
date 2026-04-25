@@ -62,7 +62,14 @@ class OllamaClient:
 
 
 def strip_json_fence(raw: str) -> dict:
-    """Some models wrap JSON in ```json ... ```. Strip and parse."""
+    """Best-effort parse of vision-model output.
+
+    Handles three real-world cases observed from Ollama vision models:
+    1. Plain JSON object.
+    2. Fenced JSON: ```json ... ``` or just ``` ... ```.
+    3. JSON followed by trailing prose / newlines / a second snippet — we
+       use raw_decode to take the first complete object and ignore the rest.
+    """
     s = raw.strip()
     if s.startswith("```"):
         s = s.split("\n", 1)[1] if "\n" in s else s[3:]
@@ -70,4 +77,11 @@ def strip_json_fence(raw: str) -> dict:
             s = s[:-3]
         if s.lstrip().lower().startswith("json"):
             s = s.split("\n", 1)[1] if "\n" in s else s
-    return json.loads(s)
+    s = s.strip()
+    # strict=False allows literal tabs/newlines inside string values — vision
+    # models routinely emit them in multi-line fields like Aadhaar addresses.
+    decoder = json.JSONDecoder(strict=False)
+    obj, _ = decoder.raw_decode(s)
+    if not isinstance(obj, dict):
+        raise json.JSONDecodeError("expected object", s, 0)
+    return obj

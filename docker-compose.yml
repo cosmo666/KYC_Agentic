@@ -1,0 +1,8 @@
+# Root-level shim — lets you run `docker compose <cmd>` from the project
+# root without the -f flag. The real definitions live in infra/.
+# `name:` must match the included file's project name so commands here
+# manage the same containers (e.g. `docker compose logs -f api`).
+name: ai-kyc-agent
+
+include:
+  - infra/docker-compose.yml

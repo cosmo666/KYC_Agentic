@@ -15,8 +15,8 @@ class Settings(BaseSettings):
 
     # Ollama + models
     ollama_base_url: str = "http://host.docker.internal:11434"
-    chat_model: str = "gemma4:31b-cloud"
-    ocr_model: str = "ministral-3:8b-cloud"
+    chat_model: str = "gemma3:27b-cloud"
+    ocr_model: str = "ministral-3:14b-cloud"
     embed_model: str = "bge-m3:latest"
 
     # Qdrant

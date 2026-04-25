@@ -8,11 +8,8 @@ from app.db import models as m
 from app.services.ollama_client import OllamaClient
 from app.services.rag import RAGService
 
-FAQ_PROMPT = """You are a KYC assistant. Use the CONTEXT below to answer the user's question.
-- If the context doesn't contain the answer, say so plainly; don't invent facts.
-- Reply in the user's language ({lang}).
-- Keep it to 2-4 sentences.
-- At the end, include a short "Sources:" line listing the source file names used.
+FAQ_PROMPT = """Answer the KYC question using only CONTEXT. If not covered, say so plainly.
+Reply in {lang}. 2-4 sentences. End with one line: "Sources: <file names>".
 
 CONTEXT:
 {context}

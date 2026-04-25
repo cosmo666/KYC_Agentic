@@ -20,9 +20,9 @@ A chat-first KYC (Know Your Customer) flow for Indian users, built as a multi-ag
 
 ```bash
 # Pull the three models the agents need
-ollama pull gemma3:27b-cloud      # chat + reply generation; vision-capable
-ollama pull ministral-3:8b-cloud  # OCR / vision extraction (multimodal)
-ollama pull bge-m3:latest         # 1024-dim embeddings for RAG
+ollama pull gemma3:27b-cloud       # chat + reply generation; vision-capable
+ollama pull ministral-3:14b-cloud  # OCR / vision extraction (multimodal)
+ollama pull bge-m3:latest          # 1024-dim embeddings for RAG
 
 # Clone and configure
 git clone https://github.com/cosmo666/ai-kyc-agent.git
@@ -45,8 +45,64 @@ Then:
 
 - **Web app:** <http://localhost:5173>
 - **API docs:** <http://localhost:8000/docs>
-- **Langfuse:** <http://localhost:3000> — sign up locally (email/password, stored in `langfuse-db`). Create a project, copy the public + secret keys into `infra/.env`, then `docker compose restart api`.
+- **Langfuse:** <http://localhost:3000> — see [Connecting to Langfuse](#connecting-to-langfuse) below.
 - **Qdrant dashboard:** <http://localhost:6333/dashboard>
+
+> **Port 5173 already in use?** A common cause is a Vite dev server (`npm run dev`) already running on the host. The compose mapping is parameterised — set `WEB_PORT=5174` (or any free port) in `infra/.env` and `docker compose up -d --build web` will rebind. The web container is opt-in; the rest of the stack runs without it.
+
+## Connecting to Langfuse
+
+Self-hosted Langfuse stores its own users in a separate Postgres (`langfuse-db`) — they have nothing to do with the `kyc` user that owns the application database. Multi-user is supported, with caveats.
+
+### First-time setup (operator)
+
+1. Open <http://localhost:3000>.
+2. **Sign up** with any email + password. Nothing is sent anywhere — credentials are hashed and stored locally in `langfuse-db`.
+3. Create an **Organization**, then a **Project** inside it (e.g. `kyc-agent`).
+4. Go to **Project Settings → API Keys → Create new API keys**.
+5. Copy the **Public Key** (`pk-lf-...`) and **Secret Key** (`sk-lf-...`) into `infra/.env`:
+
+   ```env
+   LANGFUSE_PUBLIC_KEY=pk-lf-...
+   LANGFUSE_SECRET_KEY=sk-lf-...
+   ```
+
+6. Restart the api so it picks up the keys:
+
+   ```bash
+   docker compose restart api
+   ```
+
+After this, every Ollama call from the agents emits a trace visible in the Langfuse UI under your project.
+
+### Letting other people connect later
+
+By default the compose config does **not** disable signup, so anyone with network access to `http://localhost:3000` can create their own account.
+
+- A brand-new account starts empty — no organization, no project, no traces.
+- To share **your** project with someone, log in as the first user, open your organization → **Members → Invite** by email. They'll join your org when they sign up with that address.
+- The `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` in `infra/.env` are project-scoped — anyone with those values can write traces to that project, regardless of whether they have a Langfuse UI account.
+
+### Locking signup down (optional)
+
+If the host is reachable from a network you don't trust, prevent new accounts from being created:
+
+```yaml
+# infra/docker-compose.yml — under services.langfuse.environment
+AUTH_DISABLE_SIGNUP: "true"
+```
+
+Then `docker compose up -d langfuse`. Existing accounts and pending invites still work; only fresh signups are blocked.
+
+### Resetting Langfuse (development only)
+
+```bash
+docker compose down langfuse langfuse-db
+docker volume rm ai-kyc-agent_langfuse_data
+docker compose up -d langfuse
+```
+
+This wipes accounts, projects, traces — everything. Useful when iterating locally; **never** run this against a real deployment.
 
 ## One-time: seed the RAG corpus
 
