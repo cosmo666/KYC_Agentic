@@ -58,8 +58,8 @@ Ollama runs the LLMs (chat, OCR, embeddings) **on your machine**, not in Docker.
 ### Step 3 — Clone the repo
 
 ```bash
-git clone https://github.com/cosmo666/ai-kyc-agent.git
-cd ai-kyc-agent
+git clone https://github.com/cosmo666/KYC_Agentic.git
+cd KYC_Agentic
 ```
 
 If you don't have Git installed, get it from [git-scm.com/downloads](https://git-scm.com/downloads). Or download the zip from GitHub and unzip it into a folder.
